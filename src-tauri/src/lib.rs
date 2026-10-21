@@ -4,6 +4,7 @@ mod player;
 mod preview;
 mod probe;
 mod recent;
+mod rnnoise;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

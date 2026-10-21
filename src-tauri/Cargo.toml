@@ -15,6 +15,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Compiling the vendored RNNoise C library, and checking its downloaded model (build.rs).
+cc = "1.9.0"
+sha2 = "0.10.9"
 
 [dependencies]
 tauri = { version = "2", features = [] }
