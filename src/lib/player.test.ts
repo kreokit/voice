@@ -5,7 +5,15 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 import { estimate } from "./player";
 
 describe("estimate", () => {
-  const state = { playing: true, position_ms: 1_000, duration_ms: 2_000, error: null };
+  const state = {
+    playing: true,
+    position_ms: 1_000,
+    duration_ms: 2_000,
+    has_cleaned: false,
+    listen_cleaned: false,
+    strength: 0.85,
+    error: null,
+  };
 
   it("moves on while playing", () => {
     expect(estimate(state, 500, 620)).toBe(1_120);

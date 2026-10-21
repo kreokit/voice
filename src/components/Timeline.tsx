@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { blendLevel } from "../lib/clean";
 import { View, clampView, fitView, follow, msAt, tickLabel, tickStep, xAt, zoomAt } from "../lib/timeline";
 import { IconButton } from "../ui";
 
@@ -13,12 +14,15 @@ export const PEAKS_PER_SECOND = 100;
 export function Timeline({
   durationMs,
   peaks,
+  cleaned,
   currentMs,
   playing,
   onSeek,
 }: {
   durationMs: number;
   peaks: Uint8Array | null;
+  /** The cleaned sound's levels and Strength, drawn over the original. */
+  cleaned: { peaks: Uint8Array; strength: number; listening: boolean } | null;
   currentMs: number;
   playing: boolean;
   onSeek: (ms: number) => void;
@@ -85,6 +89,11 @@ export function Timeline({
         <IconButton icon={Maximize2} label="Show the whole recording" size="sm" onClick={() => setView(fitView(durationMs, width))} />
         <IconButton icon={ZoomOut} label="Zoom out" shortcut="⌘ scroll" size="sm" onClick={() => zoomBy(1 / 1.5)} />
         <IconButton icon={ZoomIn} label="Zoom in" shortcut="⌘ scroll" size="sm" onClick={() => zoomBy(1.5)} />
+        {cleaned && (
+          <span className="timeline-legend">
+            <span className="legend-swatch original" /> Original <span className="legend-swatch cleaned" /> Cleaned
+          </span>
+        )}
         <span className="timeline-hint">Click or drag to move the playhead · scroll to move along</span>
       </div>
       <div
@@ -108,15 +117,28 @@ export function Timeline({
             </span>
           ))}
         </div>
-        <Waveform peaks={peaks} view={view} width={width} />
+        <Waveform peaks={peaks} cleaned={cleaned} view={view} width={width} />
         {playheadX >= 0 && playheadX <= width && <div className="timeline-playhead" style={{ left: playheadX }} />}
       </div>
     </section>
   );
 }
 
-/** Peak levels drawn mirrored around the middle, one column per pixel. */
-function Waveform({ peaks, view, width }: { peaks: Uint8Array | null; view: View; width: number }) {
+/**
+ * Peak levels drawn mirrored around the middle, one column per pixel. With a cleaned
+ * sound, the original is drawn dim and the cleaned one (at the Strength) in front.
+ */
+function Waveform({
+  peaks,
+  cleaned,
+  view,
+  width,
+}: {
+  peaks: Uint8Array | null;
+  cleaned: { peaks: Uint8Array; strength: number; listening: boolean } | null;
+  view: View;
+  width: number;
+}) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [height, setHeight] = useState(0);
 
@@ -138,19 +160,34 @@ function Waveform({ peaks, view, width }: { peaks: Uint8Array | null; view: View
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, width, height);
     if (!peaks) return;
-    ctx.fillStyle = getComputedStyle(el).getPropertyValue("--color-waveform-active").trim();
+    const css = getComputedStyle(el);
+    const dim = css.getPropertyValue("--color-waveform").trim();
+    const bright = css.getPropertyValue("--color-waveform-active").trim();
+    const front = css.getPropertyValue("--color-text-2").trim();
     const perMs = PEAKS_PER_SECOND / 1000;
     const mid = height / 2;
-    for (let x = 0; x < width; x++) {
-      const from = Math.floor(msAt(x, view) * perMs);
-      const to = Math.max(from + 1, Math.floor(msAt(x + 1, view) * perMs));
-      let level = 0;
-      for (let i = Math.max(from, 0); i < Math.min(to, peaks.length); i++) level = Math.max(level, peaks[i]);
-      if (level === 0) continue;
+    const column = (x: number, level: number) => {
+      if (level === 0) return;
       const h = Math.max(1, (level / 255) * (height - 8));
       ctx.fillRect(x, mid - h / 2, 1, h);
+    };
+    for (let x = 0; x < width; x++) {
+      const from = Math.max(0, Math.floor(msAt(x, view) * perMs));
+      const to = Math.max(from + 1, Math.floor(msAt(x + 1, view) * perMs));
+      let level = 0;
+      let blended = 0;
+      for (let i = from; i < Math.min(to, peaks.length); i++) {
+        level = Math.max(level, peaks[i]);
+        if (cleaned) blended = Math.max(blended, blendLevel(peaks[i], cleaned.peaks[i] ?? 0, cleaned.strength));
+      }
+      ctx.fillStyle = cleaned ? dim : bright;
+      column(x, level);
+      if (cleaned) {
+        ctx.fillStyle = cleaned.listening ? front : bright;
+        column(x, blended);
+      }
     }
-  }, [peaks, view, width, height]);
+  }, [peaks, cleaned, view, width, height]);
 
   return <canvas ref={canvas} className="timeline-waveform" style={{ width }} aria-hidden />;
 }

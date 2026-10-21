@@ -5,6 +5,11 @@ export interface PlayerState {
   playing: boolean;
   position_ms: number;
   duration_ms: number;
+  /** A cleaned sound is loaded. */
+  has_cleaned: boolean;
+  /** Listening to the cleaned sound (B) rather than the original (A). */
+  listen_cleaned: boolean;
+  strength: number;
   /** The audio output failed; playback stopped. */
   error: string | null;
 }
@@ -15,6 +20,9 @@ export const playerPlay = () => invoke<PlayerState>("player_play");
 export const playerPause = () => invoke<PlayerState>("player_pause");
 export const playerSeek = (ms: number) => invoke<PlayerState>("player_seek", { ms });
 export const playerState = () => invoke<PlayerState>("player_state");
+export const playerLoadCleaned = (path: string) => invoke<PlayerState>("player_load_cleaned", { path });
+export const playerListen = (cleaned: boolean) => invoke<PlayerState>("player_listen", { cleaned });
+export const playerStrength = (strength: number) => invoke<PlayerState>("player_strength", { strength });
 
 /**
  * The playhead between two polls: the last reported position plus the time since it was
