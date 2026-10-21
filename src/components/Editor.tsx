@@ -21,6 +21,7 @@ import {
   strengthOf,
   withStrength,
 } from "../lib/clean";
+import { Analysis, formatFloor, formatLufs, formatTruePeak, notes } from "../lib/analysis";
 import { fileName, formatDuration, formatTime } from "../lib/files";
 import { describeAudio } from "../lib/media";
 import {
@@ -65,6 +66,7 @@ export function Editor({ file }: { file: OpenFile }) {
   const [cleanedPeaks, setCleanedPeaks] = useState<Uint8Array | null>(null);
   const [settings, setSettings] = useState<FileSettings>(DEFAULT_SETTINGS);
   const [best, setBest] = useState<BestModel | null>(null);
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const model = settings.model;
   const strength = strengthOf(settings);
   const [player, setPlayer] = useState<PlayerState | null>(null);
@@ -86,7 +88,11 @@ export function Editor({ file }: { file: OpenFile }) {
       if (live && e.payload.path === file.path) setStage({ kind: "preparing", fraction: e.payload.fraction });
     });
     (async () => {
-      await invoke("prepare_preview", { path: file.path, channels: info.audio.channels, durationMs: info.duration_ms });
+      const prepared = await invoke<{ analysis: Analysis }>("prepare_preview", {
+        path: file.path,
+        channels: info.audio.channels,
+        durationMs: info.duration_ms,
+      });
       const [wave, , saved, bestInfo] = await Promise.all([
         invoke<ArrayBuffer>("waveform", { path: file.path }),
         playerOpen(file.path),
@@ -99,6 +105,7 @@ export function Editor({ file }: { file: OpenFile }) {
       if (cleaned) state = await playerLoadCleaned(file.path, saved.model);
       if (!live) return;
       setPeaks(new Uint8Array(wave));
+      setAnalysis(prepared.analysis);
       setSettings(saved);
       setBest(bestInfo);
       setCleanedPeaks(cleanedPeaks);
@@ -240,6 +247,20 @@ export function Editor({ file }: { file: OpenFile }) {
               </span>
             )}
           </section>
+
+          {analysis && (
+            <section className="editor-readout" aria-label="Original sound">
+              <span className="readout-label">Original</span>
+              <span title="Integrated loudness (EBU R128)">{formatLufs(analysis.integrated_lufs)}</span>
+              <span title="Highest true peak">peak {formatTruePeak(analysis.true_peak_db)}</span>
+              <span title="The quiet between words">noise {formatFloor(analysis.noise_floor_db)}</span>
+              {notes(analysis).map((n) => (
+                <span key={n} className="readout-note">
+                  {n}
+                </span>
+              ))}
+            </section>
+          )}
 
           {stage.kind === "preparing" && (
             <section className="editor-status" aria-live="polite">

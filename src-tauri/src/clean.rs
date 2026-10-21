@@ -730,6 +730,14 @@ mod tests {
             source_modified_ms: 0,
             channels: 2,
             frames: frames.len() as u64,
+            analysis: crate::analysis::Analysis {
+                integrated_lufs: None,
+                loudness_range_lu: None,
+                true_peak_db: 0.0,
+                sample_peak_db: 0.0,
+                noise_floor_db: 0.0,
+                clipped_places: 0,
+            },
         };
         // Processor time of this process (user + system), in seconds.
         let cpu = || {

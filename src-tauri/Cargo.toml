@@ -36,6 +36,8 @@ sha2 = "0.10.9"
 # Clips: ort 2.0.0-rc.10 (ONNX Runtime 1.22.0, statically linked) is the last release with a
 # prebuilt library for Intel Macs, and it runs on macOS 12. rc.11+ dropped x86_64-apple-darwin.
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "download-binaries"] }
+# EBU R128 loudness, loudness range and true peak (port of libebur128).
+ebur128 = "0.1.10"
 # DPDFNet's STFT (960-point real FFT).
 realfft = "3.5.0"
 

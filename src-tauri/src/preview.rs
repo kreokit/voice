@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::{Analysis, Analyzer};
 use crate::{disk, ffmpeg};
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -27,7 +28,7 @@ pub const PEAKS_PER_SECOND: u32 = 100;
 /// Levels are drawn on a decibel scale from this floor up to 0 dBFS.
 const FLOOR_DB: f32 = -48.0;
 /// Bumped when the cache format changes; older caches are decoded again.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 /// Free space to leave on the disk after the cache is written.
 pub const DISK_MARGIN: u64 = 1 << 30;
 
@@ -40,6 +41,8 @@ pub struct Meta {
     pub channels: u16,
     /// Samples per channel.
     pub frames: u64,
+    /// Loudness, peaks, noise floor and clipping (milestone 4; cache version 2).
+    pub analysis: Analysis,
 }
 
 /// A file's cache folder: a stable hash of its path (FNV-1a, 16 hex digits).
@@ -205,6 +208,7 @@ fn decode(
         File::create(audio_path(dir)).map_err(|e| e.to_string())?,
     );
     let mut levels = Levels::new(channels);
+    let mut analyzer = Analyzer::new(channels, SAMPLE_RATE)?;
     let expected_frames = (duration_ms * SAMPLE_RATE as u64 / 1000).max(1);
     let mut frames = 0u64;
     let mut buffer = vec![0u8; 1 << 16];
@@ -229,6 +233,7 @@ fn decode(
             .write_all(&buffer[..whole])
             .map_err(|e| format!("cannot write the preview: {e}"))?;
         levels.push(&buffer[..whole]);
+        analyzer.push(&buffer[..whole])?;
         frames += (whole / frame_bytes) as u64;
         buffer.copy_within(whole..filled, 0);
         pending = filled - whole;
@@ -258,6 +263,7 @@ fn decode(
         source_modified_ms,
         channels,
         frames,
+        analysis: analyzer.finish(),
     };
     let json = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     fs::write(meta_path(dir), json).map_err(|e| e.to_string())?;
@@ -478,6 +484,18 @@ mod tests {
         let peaks = peaks(&dir).unwrap();
         assert_eq!(peaks.len() as u64, meta.frames.div_ceil(480));
         assert!(peaks.iter().any(|&l| l > 150), "speech is there");
+        // Measured while decoding: `say` speech, peaks just under full scale, no clipping.
+        let a = &meta.analysis;
+        assert!(
+            (-30.0..-10.0).contains(&a.integrated_lufs.unwrap()),
+            "{a:?}"
+        );
+        assert!(a.true_peak_db < 0.5 && a.true_peak_db > -12.0, "{a:?}");
+        assert!(
+            a.noise_floor_db < -50.0,
+            "say's pauses are near silent: {a:?}"
+        );
+        assert_eq!(a.clipped_places, 0);
 
         // A second prepare finds the cache without decoding (the cancel flag is set, so a
         // decode would fail).

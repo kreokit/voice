@@ -1,3 +1,4 @@
+mod analysis;
 mod clean;
 mod cpu;
 mod disk;

@@ -246,3 +246,26 @@
 .legend-swatch.cleaned {
   background: var(--color-text-2);
 }
+
+/* Loudness readout */
+
+.editor-readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  font: var(--text-meta);
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.readout-label {
+  font: var(--text-label);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+
+.readout-note {
+  color: var(--color-warning);
+}
