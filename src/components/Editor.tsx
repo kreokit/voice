@@ -3,14 +3,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Clapperboard, Pause, Play, TriangleAlert } from "lucide-react";
 import {
+  BestModel,
   CleanMeta,
-  DEFAULT_STRENGTH,
+  DEFAULT_SETTINGS,
+  DownloadProgress,
+  FileSettings,
+  Model,
+  bestModel,
   cancelClean,
+  cancelModelDownload,
   cleanFile,
   cleanStatus,
   cleanedWaveform,
+  downloadBestModel,
   fileSettings,
   saveSettings,
+  strengthOf,
+  withStrength,
 } from "../lib/clean";
 import { fileName, formatDuration, formatTime } from "../lib/files";
 import { describeAudio } from "../lib/media";
@@ -38,6 +47,7 @@ type Stage = { kind: "preparing"; fraction: number } | { kind: "ready" } | { kin
 
 export type CleanStage =
   | { kind: "none" }
+  | { kind: "downloading"; progress: DownloadProgress | null }
   | { kind: "running"; fraction: number }
   | { kind: "done"; meta: CleanMeta }
   | { kind: "failed"; message: string };
@@ -45,7 +55,7 @@ export type CleanStage =
 /** How often the playhead is read from the player while playing (drawn smoothly between). */
 const POLL_MS = 100;
 
-/** The open file: waveform, playback, noise removal with A/B and Strength. */
+/** The open file: waveform, playback, noise removal (Fast or Best) with A/B and Strength. */
 export function Editor({ file }: { file: OpenFile }) {
   const close = useSession((s) => s.close);
   const { info } = file;
@@ -53,7 +63,10 @@ export function Editor({ file }: { file: OpenFile }) {
   const [clean, setClean] = useState<CleanStage>({ kind: "none" });
   const [peaks, setPeaks] = useState<Uint8Array | null>(null);
   const [cleanedPeaks, setCleanedPeaks] = useState<Uint8Array | null>(null);
-  const [strength, setStrength] = useState(DEFAULT_STRENGTH);
+  const [settings, setSettings] = useState<FileSettings>(DEFAULT_SETTINGS);
+  const [best, setBest] = useState<BestModel | null>(null);
+  const model = settings.model;
+  const strength = strengthOf(settings);
   const [player, setPlayer] = useState<PlayerState | null>(null);
   const [now, setNow] = useState(0);
   const receivedAt = useRef(0);
@@ -74,20 +87,21 @@ export function Editor({ file }: { file: OpenFile }) {
     });
     (async () => {
       await invoke("prepare_preview", { path: file.path, channels: info.audio.channels, durationMs: info.duration_ms });
-      const [wave, , settings, cleaned] = await Promise.all([
+      const [wave, , saved, bestInfo] = await Promise.all([
         invoke<ArrayBuffer>("waveform", { path: file.path }),
         playerOpen(file.path),
         fileSettings(file.path),
-        cleanStatus(file.path),
+        bestModel(),
       ]);
-      let state = await playerStrength(settings.strength);
-      if (cleaned) {
-        setCleanedPeaks(await cleanedWaveform(file.path));
-        state = await playerLoadCleaned(file.path);
-      }
+      const cleaned = await cleanStatus(file.path, saved.model);
+      let state = await playerStrength(strengthOf(saved));
+      const cleanedPeaks = cleaned ? await cleanedWaveform(file.path, saved.model) : null;
+      if (cleaned) state = await playerLoadCleaned(file.path, saved.model);
       if (!live) return;
       setPeaks(new Uint8Array(wave));
-      setStrength(settings.strength);
+      setSettings(saved);
+      setBest(bestInfo);
+      setCleanedPeaks(cleanedPeaks);
       if (cleaned) setClean({ kind: "done", meta: cleaned });
       update(state);
       setStage({ kind: "ready" });
@@ -97,6 +111,7 @@ export function Editor({ file }: { file: OpenFile }) {
       void progress.then((un) => un());
       void invoke("cancel_preview");
       void cancelClean();
+      void cancelModelDownload();
       void playerClose();
     };
   }, [file.path, info.audio.channels, info.duration_ms, update]);
@@ -118,33 +133,63 @@ export function Editor({ file }: { file: OpenFile }) {
     };
   }, [playing, update]);
 
+  const save = useCallback(
+    (next: FileSettings) => void saveSettings(file.path, next).catch((e) => toast(String(e), "error")),
+    [file.path],
+  );
+
   const removeNoise = useCallback(async () => {
-    setClean({ kind: "running", fraction: 0 });
     const progress = listen<{ path: string; fraction: number }>("clean-progress", (e) => {
       if (e.payload.path === file.path) setClean({ kind: "running", fraction: e.payload.fraction });
     });
+    const download = listen<DownloadProgress>("model-progress", (e) =>
+      setClean({ kind: "downloading", progress: e.payload }),
+    );
     try {
-      const meta = await cleanFile(file.path);
-      setCleanedPeaks(await cleanedWaveform(file.path));
+      if (model === "best" && !best?.downloaded) {
+        setClean({ kind: "downloading", progress: null });
+        await downloadBestModel();
+        setBest(await bestModel());
+      }
+      setClean({ kind: "running", fraction: 0 });
+      const meta = await cleanFile(file.path, model);
+      setCleanedPeaks(await cleanedWaveform(file.path, model));
       update(await playerListen(true));
       setClean({ kind: "done", meta });
     } catch (e) {
       setClean(String(e) === "cancelled" ? { kind: "none" } : { kind: "failed", message: String(e) });
     } finally {
       void progress.then((un) => un());
+      void download.then((un) => un());
     }
-  }, [file.path, update]);
+  }, [file.path, model, best, update]);
+
+  /** Fast or Best: that model's own cleaned sound (if made before) and Strength. */
+  const chooseModel = useCallback(
+    async (next: Model) => {
+      if (next === model) return;
+      const nextSettings = { ...settings, model: next };
+      setSettings(nextSettings);
+      save(nextSettings);
+      const cleaned = await cleanStatus(file.path, next);
+      setCleanedPeaks(cleaned ? await cleanedWaveform(file.path, next) : null);
+      await playerStrength(strengthOf(nextSettings));
+      update(await playerLoadCleaned(file.path, next));
+      setClean(cleaned ? { kind: "done", meta: cleaned } : { kind: "none" });
+    },
+    [file.path, model, settings, save, update],
+  );
 
   const changeStrength = useCallback(
     (s: number) => {
-      setStrength(s);
+      setSettings((current) => withStrength(current, current.model, s));
       void playerStrength(s).then(update);
     },
     [update],
   );
   const commitStrength = useCallback(
-    (s: number) => void saveSettings(file.path, { strength: s }).catch((e) => toast(String(e), "error")),
-    [file.path],
+    (s: number) => save(withStrength(settings, model, s)),
+    [save, settings, model],
   );
 
   const toggle = useCallback(() => {
@@ -263,9 +308,12 @@ export function Editor({ file }: { file: OpenFile }) {
         {stage.kind === "ready" && (
           <CleanPanel
             stage={clean}
+            model={model}
+            best={best}
+            onModel={(m) => void chooseModel(m)}
             strength={strength}
             onRemoveNoise={() => void removeNoise()}
-            onCancel={() => void cancelClean()}
+            onCancel={() => void (clean.kind === "downloading" ? cancelModelDownload() : cancelClean())}
             onStrength={changeStrength}
             onStrengthCommit={commitStrength}
           />

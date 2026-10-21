@@ -30,6 +30,46 @@ publisher are used, with no non-commercial terms, and their training data is lis
     <https://github.com/xiph/rnnoise/issues/287>.
 - The original 2017 RNNoise weights (trained partly on the commercial NTT speech database)
   are **not** used.
+- The licence ships with the app as `licenses/RNNOISE-COPYING.txt`.
+
+### DPDFNet-2, 48 kHz (the Best noise remover, downloaded on first use, not bundled)
+
+- **Weights and code:** © Ceva Technologies, Ltd., **Apache-2.0**, stated for the weights on
+  the official model card (<https://huggingface.co/Ceva-IP/DPDFNet>, `license: apache-2.0`)
+  and in <https://github.com/ceva-ip/DPDFNet> (`LICENSE`, shipped with the app as
+  `licenses/MODEL-DPDFNET-LICENSE.txt`). Paper: Rika, Sapir, Gus et al., "DPDFNet: Boosting
+  DeepFilterNet2 via Dual-Path RNN", arXiv:2512.16420.
+- **File:** `onnx/dpdfnet2_48khz_hr.onnx` from Hugging Face revision
+  `dd6818d00f50c836fed43a6243ebe49116de5964`, mirrored unchanged in this project's
+  `models-v1` release (with SOURCE.md and SHA256SUMS); the app downloads it only from there
+  and checks its SHA-256 (`7f0575a5…`).
+- **Training data** (paper, section 3.1): the Deep Noise Suppression Challenge 4 dataset
+  (Microsoft; its parts and licences are listed at
+  <https://github.com/microsoft/DNS-Challenge#dataset-licenses>: LibriVox (public domain),
+  PTDB-TUG (ODbL), the Edinburgh 56-speaker set, VocalSet (CC BY 4.0), CREMA-D (ODbL/DbCL),
+  VoxCeleb2 (CC BY 4.0, "the copyright remains with the original owners of the video"), VCTK
+  (ODC-By); noise from AudioSet (labels CC BY 4.0; YouTube audio), Freesound (CC0 only) and
+  DEMAND; room responses OpenSLR 26/28 (Apache-2.0)); Multilingual LibriSpeech English
+  (OpenSLR 94, CC BY 4.0); MUSAN (OpenSLR 17, CC BY 4.0); FSD50K (CC BY as a whole; each clip
+  keeps its Freesound licence, and about 11% of the clips are CC BY-NC).
+- Used under KreoKit's model licence rule: an explicit permissive licence for the weights
+  from their publisher, no non-commercial terms in the model's own licence or card, and the
+  training data documented here. DeepFilterNet 3 is not used (no licence stated for its
+  weights).
+
+
+## ONNX Runtime (compiled into the app)
+
+The Best model runs with **ONNX Runtime 1.22.0**, © Microsoft Corporation, **MIT** licence
+(<https://github.com/microsoft/onnxruntime>), statically linked through the `ort` crate
+(2.0.0-rc.10, MIT OR Apache-2.0) from pyke's prebuilt libraries. ONNX Runtime contains
+third-party components (for example protobuf, Abseil, Eigen, XNNPACK), each under its own
+licence; their notices ship with the app as `licenses/ONNXRUNTIME-ThirdPartyNotices.txt`,
+next to `licenses/ONNXRUNTIME-LICENSE.txt`.
+
+On Windows, ONNX Runtime is linked against `DirectML.dll`. KreoKit Voice does **not** ship
+that file: the copy that comes with Windows 10 (version 1903 or later) and Windows 11 is
+used, and the model runs on the CPU only.
 
 ## Audio output
 

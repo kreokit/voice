@@ -1,8 +1,12 @@
-/** Noise removal (src-tauri/src/clean.rs) and its settings. */
+/** Noise removal (src-tauri/src/clean.rs, models.rs) and its settings. */
 import { invoke } from "@tauri-apps/api/core";
 
-/** Measured default (clean.rs DEFAULT_STRENGTH): noise about 16.5 dB down in the pauses. */
-export const DEFAULT_STRENGTH = 0.85;
+export type Model = "fast" | "best";
+
+/** Measured defaults (clean.rs Model::default_strength). */
+export const DEFAULT_STRENGTH: Record<Model, number> = { fast: 0.85, best: 0.95 };
+/** Best's download size, shown before it is downloaded (models.rs). */
+export const BEST_SIZE_MB = 10.5;
 
 export interface CleanMeta {
   version: number;
@@ -11,18 +15,58 @@ export interface CleanMeta {
   realtime_factor: number;
 }
 
+/** What the editor remembers per file (recent.rs FileSettings). */
 export interface FileSettings {
-  strength: number;
+  model: Model;
+  fast_strength: number;
+  best_strength: number;
 }
 
-export const cleanStatus = (path: string) => invoke<CleanMeta | null>("clean_status", { path });
-export const cleanFile = (path: string) => invoke<CleanMeta>("clean_file", { path });
+export const DEFAULT_SETTINGS: FileSettings = {
+  model: "fast",
+  fast_strength: DEFAULT_STRENGTH.fast,
+  best_strength: DEFAULT_STRENGTH.best,
+};
+
+/** The Strength of the file's chosen model. */
+export const strengthOf = (s: FileSettings, model: Model = s.model) =>
+  model === "fast" ? s.fast_strength : s.best_strength;
+
+/** The settings with `model`'s Strength set. */
+export const withStrength = (s: FileSettings, model: Model, strength: number): FileSettings =>
+  model === "fast" ? { ...s, fast_strength: strength } : { ...s, best_strength: strength };
+
+export interface CpuSupport {
+  supported: boolean;
+  missing: string[];
+}
+
+export interface BestModel {
+  size_bytes: number;
+  downloaded: boolean;
+  cpu: CpuSupport;
+}
+
+export interface DownloadProgress {
+  downloaded_bytes: number;
+  total_bytes: number;
+}
+
+export const bestModel = () => invoke<BestModel>("best_model");
+export const downloadBestModel = () => invoke<void>("download_best_model");
+export const cancelModelDownload = () => invoke<void>("cancel_model_download");
+export const cleanStatus = (path: string, model: Model) => invoke<CleanMeta | null>("clean_status", { path, model });
+export const cleanFile = (path: string, model: Model) => invoke<CleanMeta>("clean_file", { path, model });
 export const cancelClean = () => invoke<void>("cancel_clean");
-export const cleanedWaveform = (path: string) =>
-  invoke<ArrayBuffer>("cleaned_waveform", { path }).then((b) => new Uint8Array(b));
+export const cleanedWaveform = (path: string, model: Model) =>
+  invoke<ArrayBuffer>("cleaned_waveform", { path, model }).then((b) => new Uint8Array(b));
 export const fileSettings = (path: string) => invoke<FileSettings>("file_settings", { path });
 export const saveSettings = (path: string, settings: FileSettings) =>
   invoke<void>("save_settings", { path, settings });
+
+/** "3.2 of 10.5 MB" */
+export const formatDownload = (p: DownloadProgress) =>
+  `${(p.downloaded_bytes / 1e6).toFixed(1)} of ${(p.total_bytes / 1e6).toFixed(1)} MB`;
 
 /** Waveform levels are dB-scaled bytes: 0 = −48 dBFS or quieter, 255 = 0 dBFS (preview.rs). */
 const FLOOR_DB = -48;

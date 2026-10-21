@@ -1,9 +1,9 @@
-//! Noise removal over whole recordings: one streaming [`Denoiser`] per channel, fed in
-//! order, so there are no chunk edges anywhere (the result doesn't depend on how the
-//! audio arrives; `same_result_whatever_the_block_size`). The denoiser's 20 ms delay is
-//! removed: output sample `i` lines up with input sample `i`, and the output is exactly as
-//! long as the input, so it can be mixed with the original (Strength) and put back under a
-//! video.
+//! Noise removal over whole recordings, with Fast (RNNoise) or Best (DPDFNet): one
+//! streaming engine per channel, fed in order, so there are no chunk edges anywhere (the
+//! result doesn't depend on how the audio arrives; `same_result_whatever_the_block_size`).
+//! The engine's delay (20 ms Fast, 50 ms Best) is removed: output sample `i` lines up with
+//! input sample `i`, and the output is exactly as long as the input, so it can be mixed with
+//! the original (Strength) and put back under a video.
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -13,15 +13,108 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 
 use crate::preview::{self, Levels, SAMPLE_RATE};
-use crate::rnnoise::{DELAY, Denoiser, FRAME};
+use crate::{dpdfnet, models, rnnoise};
+
+/// Both engines take 10 ms frames at 48 kHz.
+const FRAME: usize = rnnoise::FRAME;
+const _: () = assert!(dpdfnet::HOP == FRAME);
+
+/// The noise remover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Model {
+    /// RNNoise v0.2, compiled in: ~12× real time per channel on the dev Mac.
+    #[default]
+    Fast,
+    /// DPDFNet-2 48 kHz, downloaded once (10.5 MB): ~3× real time per channel, much better
+    /// (CLAUDE.md, "Best model").
+    Best,
+}
+
+impl Model {
+    /// The measured default Strength (CLAUDE.md "Fast clean" and "Best model"): Fast's
+    /// SI-SDR peaks around 70–90% and clean speech suffers a little at 100%; Best keeps
+    /// improving up to 95–100% and barely touches clean speech.
+    pub fn default_strength(self) -> f32 {
+        match self {
+            Self::Fast => 0.85,
+            Self::Best => 0.95,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Best => "best",
+        }
+    }
+
+    /// Which engine and weights made a cleaned cache.
+    fn id(self) -> String {
+        match self {
+            Self::Fast => format!(
+                "rnnoise-{}",
+                include_str!("../rnnoise/model_version").trim()
+            ),
+            Self::Best => "dpdfnet2_48khz_hr-7f0575a5".to_string(),
+        }
+    }
+}
+
+/// One channel's noise remover.
+pub enum Engine {
+    Fast(rnnoise::Denoiser),
+    Best(Box<dpdfnet::Enhancer>),
+}
+
+impl Engine {
+    /// A new engine for `model` (Best loads its downloaded file from `models_dir`).
+    pub fn new(model: Model, models_dir: &Path) -> Result<Self, String> {
+        Ok(match model {
+            Model::Fast => Self::Fast(rnnoise::Denoiser::new()),
+            Model::Best => {
+                let cpu = crate::cpu::check();
+                if !cpu.supported {
+                    return Err(format!(
+                        "this computer's processor lacks {} for the Best model",
+                        cpu.missing.join(", ")
+                    ));
+                }
+                if !models::best_downloaded(models_dir) {
+                    return Err("the Best model isn't downloaded".into());
+                }
+                let session = dpdfnet::load(&models::best_path(models_dir))?;
+                Self::Best(Box::new(dpdfnet::Enhancer::new(session)?))
+            }
+        })
+    }
+
+    fn delay(&self) -> usize {
+        match self {
+            Self::Fast(_) => rnnoise::DELAY,
+            Self::Best(_) => dpdfnet::DELAY,
+        }
+    }
+
+    fn process(&mut self, frame: &mut [f32; FRAME]) -> Result<(), String> {
+        match self {
+            Self::Fast(d) => {
+                d.process(frame);
+                Ok(())
+            }
+            Self::Best(e) => e.process(frame),
+        }
+    }
+}
 
 /// Cleans interleaved audio of 1 or 2 channels, block by block.
 pub struct Cleaner {
     channels: usize,
-    denoisers: Vec<Denoiser>,
+    engines: Vec<Engine>,
     /// Each channel's samples waiting for a full frame.
     pending: Vec<Vec<f32>>,
-    /// Output samples per channel still to drop (the denoiser's delay).
+    /// The engine's delay, and the output samples per channel still to drop for it.
+    delay: usize,
     skip: usize,
     /// Input samples per channel so far, and output samples given out.
     taken: usize,
@@ -29,13 +122,26 @@ pub struct Cleaner {
 }
 
 impl Cleaner {
+    /// A Fast cleaner (it can't fail).
+    #[cfg(test)]
     pub fn new(channels: usize) -> Self {
+        let engines = (0..channels)
+            .map(|_| Engine::Fast(rnnoise::Denoiser::new()))
+            .collect();
+        Self::with(engines)
+    }
+
+    /// A cleaner with one engine per channel (all of the same model).
+    pub fn with(engines: Vec<Engine>) -> Self {
+        let channels = engines.len();
         assert!((1..=2).contains(&channels), "{channels} channels");
+        let delay = engines[0].delay();
         Self {
             channels,
-            denoisers: (0..channels).map(|_| Denoiser::new()).collect(),
+            engines,
             pending: vec![Vec::new(); channels],
-            skip: DELAY,
+            delay,
+            skip: delay,
             taken: 0,
             given: 0,
         }
@@ -43,53 +149,55 @@ impl Cleaner {
 
     /// Feeds interleaved samples (whole frames of all channels) and appends the cleaned
     /// samples that are ready to `out`, interleaved.
-    pub fn push(&mut self, interleaved: &[f32], out: &mut Vec<f32>) {
+    pub fn push(&mut self, interleaved: &[f32], out: &mut Vec<f32>) -> Result<(), String> {
         for frame in interleaved.chunks_exact(self.channels) {
             for (ch, s) in frame.iter().enumerate() {
                 self.pending[ch].push(*s);
             }
         }
         self.taken += interleaved.len() / self.channels;
-        self.run(out);
+        self.run(out)
     }
 
-    /// Ends the stream: the last samples come out (the denoiser is fed silence to flush
-    /// its delay), and the output is cut to the input's length.
-    pub fn finish(mut self, out: &mut Vec<f32>) {
+    /// Ends the stream: the last samples come out (the engine is fed silence to flush its
+    /// delay), and the output is cut to the input's length.
+    pub fn finish(mut self, out: &mut Vec<f32>) -> Result<(), String> {
         let target = self.taken;
-        let flush = DELAY + (FRAME - self.pending[0].len() % FRAME) % FRAME;
+        let flush = self.delay + (FRAME - self.pending[0].len() % FRAME) % FRAME;
         for p in &mut self.pending {
             p.extend(std::iter::repeat_n(0.0, flush));
         }
         let before = out.len();
-        self.run(out);
+        self.run(out)?;
         let extra = (self.given - target) * self.channels;
         out.truncate(out.len().max(before + extra) - extra);
+        Ok(())
     }
 
     /// Cleans all full frames of every channel (channels in parallel) and interleaves.
-    fn run(&mut self, out: &mut Vec<f32>) {
+    fn run(&mut self, out: &mut Vec<f32>) -> Result<(), String> {
         let frames = self.pending[0].len() / FRAME;
         if frames == 0 {
-            return;
+            return Ok(());
         }
         let used = frames * FRAME;
-        let mut cleaned: Vec<Vec<f32>> = Vec::with_capacity(self.channels);
+        let parallel = self.channels > 1 && frames >= 10;
+        let mut cleaned: Vec<Result<Vec<f32>, String>> = Vec::with_capacity(self.channels);
         std::thread::scope(|scope| {
             let jobs: Vec<_> = self
-                .denoisers
+                .engines
                 .iter_mut()
                 .zip(&self.pending)
-                .map(|(denoiser, pending)| {
+                .map(|(engine, pending)| {
                     let input = &pending[..used];
-                    let mut work = move || {
+                    let mut work = move || -> Result<Vec<f32>, String> {
                         let mut out = input.to_vec();
                         for chunk in out.chunks_exact_mut(FRAME) {
-                            denoiser.process(chunk.try_into().unwrap());
+                            engine.process(chunk.try_into().unwrap())?;
                         }
-                        out
+                        Ok(out)
                     };
-                    if self.channels > 1 && frames >= 10 {
+                    if parallel {
                         Ok(scope.spawn(work))
                     } else {
                         Err(work())
@@ -103,6 +211,7 @@ impl Cleaner {
                 });
             }
         });
+        let cleaned = cleaned.into_iter().collect::<Result<Vec<_>, _>>()?;
         for p in &mut self.pending {
             p.drain(..used);
         }
@@ -115,22 +224,24 @@ impl Cleaner {
             }
         }
         self.given += used - skip;
+        Ok(())
     }
 }
 
-/// Cleans a whole mono or interleaved buffer at once.
+/// Cleans a whole mono or interleaved buffer at once with Fast.
 #[cfg(test)]
 pub fn clean(interleaved: &[f32], channels: usize) -> Vec<f32> {
     let mut cleaner = Cleaner::new(channels);
     let mut out = Vec::with_capacity(interleaved.len());
-    cleaner.push(interleaved, &mut out);
-    cleaner.finish(&mut out);
+    cleaner.push(interleaved, &mut out).unwrap();
+    cleaner.finish(&mut out).unwrap();
     out
 }
 
-/// The default Strength (measured 2026-10-21, CLAUDE.md "Fast clean"): the noise left in
-/// the pauses is 20·log10(1 − s) dB, about −16.5 dB here, while clean speech keeps 17.8 dB
-/// SI-SDR instead of 16.4 at full strength, and steady noise is within 0.3 dB of the best.
+/// Fast's default Strength (measured 2026-10-21, CLAUDE.md "Fast clean"): the noise left
+/// in the pauses is 20·log10(1 − s) dB, about −16.5 dB here, while clean speech keeps
+/// 17.8 dB SI-SDR instead of 16.4 at full strength, and steady noise is within 0.3 dB of
+/// the best.
 pub const DEFAULT_STRENGTH: f32 = 0.85;
 
 /// Strength: the cleaned sound mixed with the original (0 = original, 1 = fully cleaned).
@@ -141,15 +252,7 @@ pub fn blend(original: f32, cleaned: f32, strength: f32) -> f32 {
 /// Bumped when the cleaned cache's format or processing changes; older ones are redone.
 const VERSION: u32 = 1;
 
-/// The model that made a cleaned cache: RNNoise and its weights' hash.
-fn model_id() -> String {
-    format!(
-        "rnnoise-{}",
-        include_str!("../rnnoise/model_version").trim()
-    )
-}
-
-/// A finished cleaned preview (`clean-fast.*` next to the preview cache).
+/// A finished cleaned preview (`clean-<model>.*` next to the preview cache).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CleanMeta {
     pub version: u32,
@@ -160,50 +263,62 @@ pub struct CleanMeta {
     pub realtime_factor: f64,
 }
 
-pub fn audio_path(dir: &Path) -> PathBuf {
-    dir.join("clean-fast.pcm")
+pub fn audio_path(dir: &Path, model: Model) -> PathBuf {
+    dir.join(format!("clean-{}.pcm", model.name()))
 }
 
-fn peaks_path(dir: &Path) -> PathBuf {
-    dir.join("clean-fast.peaks")
+fn peaks_path(dir: &Path, model: Model) -> PathBuf {
+    dir.join(format!("clean-{}.peaks", model.name()))
 }
 
-fn meta_path(dir: &Path) -> PathBuf {
-    dir.join("clean-fast.json")
+fn meta_path(dir: &Path, model: Model) -> PathBuf {
+    dir.join(format!("clean-{}.json", model.name()))
 }
 
-/// The cleaned preview in `dir`, if it is complete and matches `preview` and this model.
-pub fn cached(dir: &Path, preview: &preview::Meta) -> Option<CleanMeta> {
-    let meta: CleanMeta = serde_json::from_str(&fs::read_to_string(meta_path(dir)).ok()?).ok()?;
-    let complete = audio_path(dir)
+/// `model`'s cleaned preview in `dir`, if it is complete and matches `preview` and the
+/// model's weights.
+pub fn cached(dir: &Path, preview: &preview::Meta, model: Model) -> Option<CleanMeta> {
+    let meta: CleanMeta =
+        serde_json::from_str(&fs::read_to_string(meta_path(dir, model)).ok()?).ok()?;
+    let complete = audio_path(dir, model)
         .metadata()
         .is_ok_and(|m| m.len() == meta.frames * preview.channels as u64 * 2);
     (meta.version == VERSION
-        && meta.model == model_id()
+        && meta.model == model.id()
         && meta.frames == preview.frames
         && complete)
         .then_some(meta)
 }
 
 /// The cleaned waveform: one level per 10 ms, like the preview's.
-pub fn peaks(dir: &Path) -> Result<Vec<u8>, String> {
-    fs::read(peaks_path(dir)).map_err(|e| format!("cannot read the cleaned waveform: {e}"))
+pub fn peaks(dir: &Path, model: Model) -> Result<Vec<u8>, String> {
+    fs::read(peaks_path(dir, model)).map_err(|e| format!("cannot read the cleaned waveform: {e}"))
 }
 
-/// Cleans the preview in `dir` (described by `preview`) into `clean-fast.*`, fully
-/// (Strength is applied when listening). `progress` gets the fraction done about every
-/// second of sound; `cancel` stops it and leaves nothing behind.
+/// Cleans the preview in `dir` (described by `preview`) with `model` into
+/// `clean-<model>.*`, fully (Strength is applied when listening). `progress` gets the
+/// fraction done about every second of sound; `cancel` stops it and leaves nothing behind.
 pub fn prepare(
     dir: &Path,
     preview: &preview::Meta,
+    model: Model,
+    models_dir: &Path,
     cancel: &AtomicBool,
     mut progress: impl FnMut(f64),
 ) -> Result<CleanMeta, String> {
-    if let Some(meta) = cached(dir, preview) {
+    if let Some(meta) = cached(dir, preview, model) {
         return Ok(meta);
     }
-    let part = dir.join("clean-fast.pcm.part");
-    let result = clean_preview(dir, &part, preview, cancel, &mut progress);
+    let part = dir.join(format!("clean-{}.pcm.part", model.name()));
+    let result = clean_preview(
+        dir,
+        &part,
+        preview,
+        model,
+        models_dir,
+        cancel,
+        &mut progress,
+    );
     if result.is_err() {
         let _ = fs::remove_file(&part);
     }
@@ -214,11 +329,17 @@ fn clean_preview(
     dir: &Path,
     part: &Path,
     preview: &preview::Meta,
+    model: Model,
+    models_dir: &Path,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(f64),
 ) -> Result<CleanMeta, String> {
     let started = std::time::Instant::now();
     let channels = preview.channels as usize;
+    let engines = (0..channels)
+        .map(|_| Engine::new(model, models_dir))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut cleaner = Cleaner::with(engines);
     let mut input = BufReader::with_capacity(
         1 << 20,
         File::open(preview::audio_path(dir))
@@ -229,7 +350,6 @@ fn clean_preview(
         File::create(part).map_err(|e| format!("cannot write the cleaned sound: {e}"))?,
     );
     let mut levels = Levels::new(preview.channels);
-    let mut cleaner = Cleaner::new(channels);
     // One second of sound per step.
     let block = SAMPLE_RATE as usize * channels * 2;
     let mut bytes = vec![0u8; block];
@@ -261,12 +381,12 @@ fn clean_preview(
                 .chunks_exact(2)
                 .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0),
         );
-        cleaner.push(&samples, &mut cleaned);
+        cleaner.push(&samples, &mut cleaned)?;
         write(&mut cleaned, &mut levels)?;
         done += (n / (channels * 2)) as u64;
         progress((done as f64 / preview.frames.max(1) as f64).min(1.0));
     }
-    cleaner.finish(&mut cleaned);
+    cleaner.finish(&mut cleaned)?;
     write(&mut cleaned, &mut levels)?;
     drop(write);
     output
@@ -280,18 +400,19 @@ fn clean_preview(
             preview.frames
         ));
     }
-    fs::write(peaks_path(dir), levels.finish()).map_err(|e| e.to_string())?;
-    fs::rename(part, audio_path(dir))
+    fs::write(peaks_path(dir, model), levels.finish()).map_err(|e| e.to_string())?;
+    fs::rename(part, audio_path(dir, model))
         .map_err(|e| format!("cannot finish the cleaned sound: {e}"))?;
     let seconds = preview.frames as f64 / SAMPLE_RATE as f64;
     let meta = CleanMeta {
         version: VERSION,
-        model: model_id(),
+        model: model.id(),
         frames: preview.frames,
-        realtime_factor: started.elapsed().as_secs_f64() / seconds.max(1e-3),
+        // Rounded: JSON doesn't give every f64 back exactly, and 4 decimals is plenty.
+        realtime_factor: (started.elapsed().as_secs_f64() / seconds.max(1e-3) * 1e4).round() / 1e4,
     };
     let json = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
-    fs::write(meta_path(dir), json).map_err(|e| e.to_string())?;
+    fs::write(meta_path(dir, model), json).map_err(|e| e.to_string())?;
     progress(1.0);
     Ok(meta)
 }
@@ -333,9 +454,9 @@ mod tests {
             let mut cleaner = Cleaner::new(1);
             let mut out = Vec::new();
             for piece in speech.chunks(block) {
-                cleaner.push(piece, &mut out);
+                cleaner.push(piece, &mut out).unwrap();
             }
-            cleaner.finish(&mut out);
+            cleaner.finish(&mut out).unwrap();
             assert!(out == whole, "block {block}");
         }
     }
@@ -423,26 +544,63 @@ mod tests {
         let preview =
             preview::prepare(&dir, &source, 2, 5_000, &AtomicBool::new(false), |_| {}).unwrap();
         let mut reports = Vec::new();
-        let meta = prepare(&dir, &preview, &AtomicBool::new(false), |f| reports.push(f)).unwrap();
+        let models = Path::new("");
+        let meta = prepare(
+            &dir,
+            &preview,
+            Model::Fast,
+            models,
+            &AtomicBool::new(false),
+            |f| reports.push(f),
+        )
+        .unwrap();
         assert_eq!(meta.frames, preview.frames);
         assert_eq!(reports.last(), Some(&1.0));
         assert_eq!(
-            fs::metadata(audio_path(&dir)).unwrap().len(),
+            fs::metadata(audio_path(&dir, Model::Fast)).unwrap().len(),
             preview.frames * 4
         );
         assert_eq!(
-            peaks(&dir).unwrap().len() as u64,
+            peaks(&dir, Model::Fast).unwrap().len() as u64,
             preview.frames.div_ceil(480)
         );
         eprintln!("realtime factor {:.3}", meta.realtime_factor);
         // Found again without work (cancel is set: real work would fail).
         assert_eq!(
-            prepare(&dir, &preview, &AtomicBool::new(true), |_| {}).unwrap(),
+            prepare(
+                &dir,
+                &preview,
+                Model::Fast,
+                models,
+                &AtomicBool::new(true),
+                |_| {}
+            )
+            .unwrap(),
             meta
         );
         // Cancelling leaves nothing behind.
-        fs::remove_file(meta_path(&dir)).unwrap();
-        assert!(prepare(&dir, &preview, &AtomicBool::new(true), |_| {}).is_err());
+        fs::remove_file(meta_path(&dir, Model::Fast)).unwrap();
+        assert!(
+            prepare(
+                &dir,
+                &preview,
+                Model::Fast,
+                models,
+                &AtomicBool::new(true),
+                |_| {}
+            )
+            .is_err()
+        );
         assert!(!dir.join("clean-fast.pcm.part").exists());
+        // Best without its model explains why.
+        let err = prepare(
+            &dir,
+            &preview,
+            Model::Best,
+            &dir,
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        assert!(err.is_err());
     }
 }
