@@ -1,8 +1,8 @@
 # Draft: question to Xiph about the RNNoise v0.2 training data
 
-**Status:** draft, not sent. Send only after the user approves it.
-**Where:** a new issue on https://github.com/xiph/rnnoise/issues, which is where
-media.xiph.org/rnnoise/README.txt says to ask questions about the data.
+**Status:** posted 2026-10-21 with the user's OK, from their account, as
+https://github.com/xiph/rnnoise/issues/287 (where media.xiph.org/rnnoise/README.txt says to
+ask questions about the data). Waiting for an answer.
 
 ---
 

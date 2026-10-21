@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-21):** milestone 1 (Scaffold) built and checked in the app on the dev Mac; waiting for the user's test. Models decided (see "Models"); the question to Xiph (`docs/xiph-question.md`) waits for the user's OK.
+**Status (2026-10-21):** milestone 1 (Scaffold) built and checked in the app on the dev Mac; waiting for the user's test. Models decided (see "Models"); the question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -50,7 +50,7 @@ Copy (don't reinvent):
 
 ## Models (decided by the user, 2026-10-21; research in `docs/model-research.md`)
 
-- **Fast: RNNoise v0.2** (Xiph's 2024–25 model), **compiled from Xiph's BSD-3 C code** (`cc` in build.rs, model data compiled in, pinned by SHA-256), not `nnnoiseless` (its built-in weights are the 2017 v0.1 ones, trained partly on the commercial NTT speech database, and it can't load v0.2 models). The v0.2 training data (OpenSLR TTS sets CC BY-SA 4.0, Hi-Fi TTS CC BY 4.0, DEMAND CC BY 4.0, Xiph crowd noise CC0) is **accepted**. The sources of `foreground_noise` and the measured RIRs are undocumented: a question to Xiph is drafted (`docs/xiph-question.md`), sent only after the user approves it.
+- **Fast: RNNoise v0.2** (Xiph's 2024–25 model), **compiled from Xiph's BSD-3 C code** (`cc` in build.rs, model data compiled in, pinned by SHA-256), not `nnnoiseless` (its built-in weights are the 2017 v0.1 ones, trained partly on the commercial NTT speech database, and it can't load v0.2 models). The v0.2 training data (OpenSLR TTS sets CC BY-SA 4.0, Hi-Fi TTS CC BY 4.0, DEMAND CC BY 4.0, Xiph crowd noise CC0) is **accepted**. The sources of `foreground_noise` and the measured RIRs are undocumented: asked in https://github.com/xiph/rnnoise/issues/287 (posted 2026-10-21 with the user's OK; `docs/xiph-question.md`). Record the answer in THIRD-PARTY.
 - **Best: DPDFNet** (Ceva, 48 kHz, weights explicitly Apache-2.0 on the Hugging Face model card) is **allowed under the practical rule**; its training data (DNS4, MLS, MUSAN, FSD50K) is documented in THIRD-PARTY. In M3, **measure it against RNNoise** (SI-SDR improvement, reverberant fixtures, real-time factor on the dev i5) and ship it as "Best" **only if it is clearly better and fast enough**; otherwise v0.1 ships Fast only. Runs through `ort` 2.0.0-rc.10 (ONNX), mirrored in `models-v1` (pre-release).
 - **DeepFilterNet 3: rejected** (no licence for the weights; four open issues unanswered).
 - **Echo / reverb: own spectral late-reverb suppression** (Lebart 2001 / Habets style, Rust DSP, no training data) in M4, **shipped only if measurements show it helps**; otherwise the UI says "room echo reduction is coming". **No WPE** (NTT patent family, ~2029).
