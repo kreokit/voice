@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-21):** milestones 1 (Scaffold) and 2 (Fast clean) built and checked in the app on the dev Mac; waiting for the user's test. Models decided (see "Models"); the question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
+**Status (2026-10-22):** milestones 1 (Scaffold), 2 (Fast clean) and 3 (Best model) built and checked in the app on the dev Mac; waiting for the user's test. Best = DPDFNet-2 48 kHz, mirrored in the `models-v1` pre-release. The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -77,6 +77,17 @@ Copy (don't reinvent):
 - **A/B:** the player mixes the cleaned sound at the same sample (`listen_cleaned`); Original/Cleaned control under the transport, key B. Loudness matching comes in M4. The waveform draws the original dim and the cleaned sound at the current Strength in front (`blendLevel`).
 - **Quality oracle** (`clean::tests::quality_on_every_noise`, `metrics.rs`, `testsignals.rs`): `fixtures/speech/voices.wav` (two `say` voices, 13 s, pauses) mixed with seeded Rust-made noises (room = pink, fan = brown, 50 Hz hum + harmonics, keyboard clicks, gusty wind) and `babble.wav` (four `say` voices), at 0/5/10 dB SNR. **Baseline 2026-10-21 (full strength):** steady noises SI-SDR +3.3…+13.8 dB, noise in pauses −29…−46 dB; **babble: SI-SDR −2…−6 dB** (RNNoise can't separate other voices; pauses still −5…−10 dB); clean speech in → 16.4 dB SI-SDR. Asserted: steady > +2.3 dB and pauses < −25 dB; babble pauses < −3 dB; clean speech > 15 dB (full) and > 16.5 dB (default). These are the numbers DPDFNet must clearly beat in M3.
 
+## Best model (milestone 3, built 2026-10-22)
+
+- **Measured before shipping** (branch `m3-dpdfnet`, merged): the authors' `dpdfnet` 0.6.0 pipeline reimplemented in Rust (`dpdfnet.rs`) on `ort` =2.0.0-rc.10 (ONNX Runtime 1.22 static; no Python onnxruntime wheels exist for Intel Macs): 960-point Vorbis-window STFT, hop 480, one model call per frame with a 56 436-value state from the model's metadata (`erb_norm_init`, `spec_norm_init`), overlap-add (Vorbis is Princen-Bradley: plain 1/N). **Delay measured: 2400 samples (50 ms)**, correlation 0.997 (the Python code drops 1920 after librosa's centred STFT, which shifts by 480).
+- **Results on the M2 oracle** (dev i5, one thread): `dpdfnet2_48khz_hr` steady noises **+9.1…+20.4 dB** SI-SDR (RNNoise +3.3…+13.8), pauses −38…−50 dB, **babble +3.2…−0.3 dB** (RNNoise −2…−6), clean speech **28.0 dB** (RNNoise 16.4), realtime factor **0.33**; `dpdfnet8_48khz_hr` no better (keyboard pauses only −29 dB) at 0.73. → **Best = dpdfnet2_48khz_hr** (the user's rule: clearly better and fast enough). Asserted: steady > +8 dB and pauses < −35 dB, babble > −1.5 dB, clean speech > 26 dB (`dpdfnet::tests::quality_on_every_noise`, ignored; Linux CI runs it with the model from the mirror).
+- **Memory:** ~62 MB peak RSS for the whole measuring test binary; no memory gate needed (stereo = two ~10 MB sessions).
+- **Mirror:** `models-v1` on kreokit/voice, **pre-release** (created 2026-10-22; `/releases/latest` is 404 → nothing is Latest): `dpdfnet2_48khz_hr.onnx` (HF `Ceva-IP/DPDFNet` revision `dd6818d`, unchanged, SHA-256 `7f0575a5…`), `LICENSE-DPDFNET.txt` (Apache-2.0), `SOURCE.md` (origin, licence, training data), `SHA256SUMS`. `models.rs` downloads only `…/releases/download/models-v1/<file>` and checks size + SHA-256; `<app data>/models/`.
+- **CPU:** ONNX Runtime needs x86-64-v2 (`cpu.rs` from Cutout); Best is disabled with the reason on older CPUs; Fast always works (RNNoise picks its kernels at run time). No startup dialog.
+- **App:** `clean::Model` (Fast/Best) and `Engine` per channel; caches `clean-fast.*` / `clean-best.*` side by side (switching back is instant). Stereo channels run in parallel: Best cleaned a 39 s stereo file at RTF 0.43 (2× real time) on the dev Mac. **Default Strength per model** (measured): Fast 85%, Best 95% (Best's SI-SDR keeps rising to 95–100%; clean speech > 28 dB at any strength). Per-file settings: `model`, `fast_strength`, `best_strength` (M2's `strength` is read as `fast_strength`).
+- **UI:** Model (Fast "Quick, built in" / Best "Clearest · 10.5 MB download", then "Clearest, slower"); Remove noise with Best downloads first ("Downloading the Best model… 3.2 of 10.5 MB", Cancel); the speed line shows "N× faster than real time".
+- **Training-data note (user-accepted practical rule):** DNS4 includes AudioSet (YouTube audio) and VoxCeleb2; FSD50K is ~11% CC BY-NC clips. All listed in THIRD-PARTY and the mirror's SOURCE.md.
+
 ## Core pipeline
 
 1. **Probe + decode** (ffmpeg) to 48 kHz f32, keeping the original channel layout and the video stream info.
@@ -103,7 +114,7 @@ Copy (don't reinvent):
 
 1. 🔶 **Scaffold** (built 2026-10-21, waiting for the user's test): repo from Clips/Cutout foundations, dev port 1450, Home, probe + decode, waveform + playback.
 2. 🔶 **Fast clean** (built 2026-10-21, waiting for the user's test): licence check, RNNoise (or verified alternative), chunked processing with overlap, Strength, A/B compare, progress + cancel.
-3. **Best model:** licence + training-data check, conversion/mirror in `models-v1` (pre-release) if needed, Fast/Best choice, memory check, speed measurement on the dev machine.
+3. 🔶 **Best model** (built 2026-10-22, waiting for the user's test): licence + training-data check, conversion/mirror in `models-v1` (pre-release) if needed, Fast/Best choice, memory check, speed measurement on the dev machine.
 4. **Polish + loudness:** analysis (R128), high-pass, de-ess, compression, loudness presets, loudness-matched A/B, echo reduction only if a clean option exists.
 5. **Export + batch + video:** audio formats, video remux with untouched video stream, batch grid, Export all, safe writing, ffprobe checks.
 6. **Release:** reuse the Clips release workflow, `--self-test` (decode a short noisy fixture, clean with each model, check the noise drops by a minimum amount, normalise, export audio + a video remux, verify with ffprobe), draft pre-release v0.1.0-alpha.
