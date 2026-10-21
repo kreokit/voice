@@ -29,6 +29,12 @@ tauri-plugin-opener = "2"
 cpal = "0.18.2"
 # Reads the preview cache for playback without loading it into memory.
 memmap2 = "=0.9.11"
+# DPDFNet (the Best model candidate, milestone 3), pinned exactly as in KreoKit Cutout and
+# Clips: ort 2.0.0-rc.10 (ONNX Runtime 1.22.0, statically linked) is the last release with a
+# prebuilt library for Intel Macs, and it runs on macOS 12. rc.11+ dropped x86_64-apple-darwin.
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "download-binaries"] }
+# DPDFNet's STFT (960-point real FFT).
+realfft = "3.5.0"
 
 # Free disk space before writing the preview cache (statvfs); already in the tree through other crates.
 [target.'cfg(unix)'.dependencies]

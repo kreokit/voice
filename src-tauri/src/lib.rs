@@ -1,5 +1,7 @@
 mod clean;
 mod disk;
+#[cfg(test)]
+mod dpdfnet;
 mod ffmpeg;
 mod metrics;
 mod player;
