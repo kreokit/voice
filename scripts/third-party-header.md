@@ -9,6 +9,13 @@ None yet. Noise-removal models are added only after their **weights and training
 have been checked: only MIT, Apache-2.0 or BSD weights, trained on data whose licences
 allow it. Each one is listed here with its licence, training data and source.
 
+## Audio output
+
+Playback uses the `cpal` crate (Apache-2.0) and the operating system's audio API:
+CoreAudio on macOS, WASAPI on Windows, and on Linux the system's ALSA library
+(`libasound`, **LGPL-2.1-or-later**, © the ALSA project, <https://www.alsa-project.org>),
+which the app links dynamically and does not modify.
+
 ## Fonts (bundled)
 
 Inter (interface font), © The Inter Project Authors, **SIL Open Font License 1.1**; the

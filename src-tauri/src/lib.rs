@@ -1,5 +1,6 @@
 mod disk;
 mod ffmpeg;
+mod player;
 mod preview;
 mod probe;
 mod recent;
@@ -40,6 +41,8 @@ fn prune_previews(app: &AppHandle, list: &[recent::RecentFile]) -> Result<(), St
     let keep: Vec<PathBuf> = list
         .iter()
         .map(|f| preview::dir_for(&root, Path::new(&f.path)))
+        // The file being played, even if it just left the list.
+        .chain(app.state::<player::Player>().loaded())
         .collect();
     preview::prune(&root, &keep);
     Ok(())
@@ -162,6 +165,11 @@ async fn prepare_preview(
         previous.store(true, Ordering::SeqCst);
     }
     let dir = preview::dir_for(&preview_root(&app)?, &path);
+    // A cache is rewritten only when it isn't mapped by the player.
+    let player = app.state::<player::Player>();
+    if player.loaded().as_ref() == Some(&dir) {
+        player.unload();
+    }
     let events = app.clone();
     blocking(move || {
         preview::prepare(&dir, &path, channels, duration_ms, &cancel, |fraction| {
@@ -189,6 +197,45 @@ fn cancel_preview(app: AppHandle) {
 async fn waveform(app: AppHandle, path: PathBuf) -> Result<tauri::ipc::Response, String> {
     let dir = preview::dir_for(&preview_root(&app)?, &path);
     blocking(move || preview::peaks(&dir).map(tauri::ipc::Response::new)).await
+}
+
+/// Loads `path`'s finished preview into the player, stopped at the start.
+#[tauri::command]
+async fn player_open(app: AppHandle, path: PathBuf) -> Result<player::PlayerState, String> {
+    let dir = preview::dir_for(&preview_root(&app)?, &path);
+    let meta = preview::cached(&dir, &path).ok_or("the preview isn't ready")?;
+    let pcm = player::Pcm::open(&preview::audio_path(&dir), meta.channels)?;
+    let player = app.state::<player::Player>();
+    player.load(pcm, dir);
+    Ok(player.state())
+}
+
+#[tauri::command]
+fn player_close(player: tauri::State<player::Player>) {
+    player.unload();
+}
+
+#[tauri::command]
+fn player_play(player: tauri::State<player::Player>) -> Result<player::PlayerState, String> {
+    player.play()?;
+    Ok(player.state())
+}
+
+#[tauri::command]
+fn player_pause(player: tauri::State<player::Player>) -> player::PlayerState {
+    player.pause();
+    player.state()
+}
+
+#[tauri::command]
+fn player_seek(player: tauri::State<player::Player>, ms: f64) -> player::PlayerState {
+    player.seek_ms(ms);
+    player.state()
+}
+
+#[tauri::command]
+fn player_state(player: tauri::State<player::Player>) -> player::PlayerState {
+    player.state()
 }
 
 /// Development aid: a file to open at startup, from `KREOKIT_DEV_OPEN`. Always `None` in
@@ -232,6 +279,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(PreviewJob::default())
+        .manage(player::Player::default())
         .invoke_handler(tauri::generate_handler![
             probe_media,
             list_recent,
@@ -241,6 +289,12 @@ pub fn run() {
             prepare_preview,
             cancel_preview,
             waveform,
+            player_open,
+            player_close,
+            player_play,
+            player_pause,
+            player_seek,
+            player_state,
             dev_startup_file,
             quit_app,
             report_problem
@@ -251,6 +305,7 @@ pub fn run() {
             // Quitting stops the decode, so its FFmpeg ends with the app.
             if let tauri::RunEvent::Exit = event {
                 cancel_preview(app.clone());
+                app.state::<player::Player>().unload();
             }
         });
 }
