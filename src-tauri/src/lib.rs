@@ -1,4 +1,17 @@
+mod ffmpeg;
+mod probe;
+
+use std::path::PathBuf;
+
 use tauri::AppHandle;
+
+/// What an audio or video file contains (refused when it has no sound).
+#[tauri::command]
+async fn probe_media(path: PathBuf) -> Result<probe::MediaInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || probe::probe(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
 
 #[tauri::command]
 fn quit_app(app: AppHandle) {
@@ -28,7 +41,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![quit_app, report_problem])
+        .invoke_handler(tauri::generate_handler![
+            probe_media,
+            quit_app,
+            report_problem
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
