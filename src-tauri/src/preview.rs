@@ -15,7 +15,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -146,15 +146,32 @@ pub fn prepare(
         return Ok(meta);
     }
     let channels = output_channels(source_channels);
-    let _ = fs::remove_dir_all(dir);
-    fs::create_dir_all(dir).map_err(|e| format!("cannot create the preview folder: {e}"))?;
-    disk::ensure_free(dir, estimated_bytes(duration_ms, channels), DISK_MARGIN)?;
-
-    let result = decode(dir, source, channels, duration_ms, cancel, &mut progress);
+    // Each job decodes into its own folder and moves it into place when finished, so a
+    // cancelled job never touches another one's files (opening the same file twice in a
+    // row, e.g. React's StrictMode in dev, cancels the first while the second runs).
+    let part = part_dir(dir);
+    let _ = fs::remove_dir_all(&part);
+    fs::create_dir_all(&part).map_err(|e| format!("cannot create the preview folder: {e}"))?;
+    let result = disk::ensure_free(&part, estimated_bytes(duration_ms, channels), DISK_MARGIN)
+        .and_then(|()| decode(&part, source, channels, duration_ms, cancel, &mut progress))
+        .and_then(|meta| {
+            let _ = fs::remove_dir_all(dir);
+            fs::rename(&part, dir)
+                .map_err(|e| format!("cannot finish the preview: {e}"))
+                .map(|()| meta)
+        });
     if result.is_err() {
-        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(&part);
     }
     result
+}
+
+/// A job's own working folder next to `dir`: `<id>.part-<n>`.
+fn part_dir(dir: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
+    dir.with_file_name(format!("{name}.part-{n}"))
 }
 
 fn decode(
@@ -318,7 +335,14 @@ pub fn prune(root: &Path, keep: &[PathBuf]) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() && !keep.contains(&path) {
+        // A job's working folder is left alone while it may still be running (an hour),
+        // and removed later if a crash left it behind.
+        let working = path.to_string_lossy().contains(".part-")
+            && entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().is_ok_and(|age| age.as_secs() < 3600));
+        if path.is_dir() && !keep.contains(&path) && !working {
             let _ = fs::remove_dir_all(&path);
         }
     }
@@ -527,6 +551,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!((meta.channels, meta.frames), (2, 48_000));
+    }
+
+    #[test]
+    fn prune_keeps_a_running_job_folder() {
+        let root = temp_dir("prune-part");
+        let part = root.join("aaaa.part-3");
+        fs::create_dir_all(&part).unwrap();
+        prune(&root, &[]);
+        assert!(part.is_dir());
+    }
+
+    /// Needs ffmpeg: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn a_cancelled_job_leaves_another_jobs_files_alone() {
+        // Another job's finished files in the folder (here: any file).
+        let dir = temp_dir("two-jobs");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("audio.pcm"), b"other job").unwrap();
+        let err = prepare(
+            &dir,
+            &fixture("hello-mono.wav"),
+            1,
+            5_000,
+            &AtomicBool::new(true),
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(err, "cancelled");
+        assert_eq!(fs::read(dir.join("audio.pcm")).unwrap(), b"other job");
+        // And its own working folder is gone.
+        let leftovers = fs::read_dir(dir.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("two-jobs.part-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
     }
 
     /// Needs ffmpeg: `cargo test -- --ignored`.
