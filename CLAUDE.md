@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-22):** milestones 1 (Scaffold), 2 (Fast clean) and 3 (Best model) built and checked in the app on the dev Mac; waiting for the user's test. Best = DPDFNet-2 48 kHz, mirrored in the `models-v1` pre-release. The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
+**Status (2026-10-22):** milestones 1–3 (Scaffold, Fast clean, Best model) are done and tested by the user ("cleaning sounds perfect"). Milestone 4 (Polish + loudness) in progress. The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -33,6 +33,7 @@ Target users: creators worldwide (podcasts, voice-overs, talking-head videos, Ti
 - Release workflow: build → all checks (bundle, licences, macOS binary check, `--self-test`) → upload only if everything passed → **draft pre-release** → the user tests the Intel macOS build on macOS 12 → publish as a pre-release → update the `kreokit/.github` profile README row (link to `/releases`).
 - Dev port: use **1450** (Captions 1420, Cutout 1430, Clips 1440).
 - Measure, don't guess: when a result looks wrong, find the cause with a measurement before changing code.
+- **After testing in the app, always stop the dev server and the app** (user, 2026-10-22), so port 1450 is free for the user. Check `lsof -i :1450`. Never stop a dev session the user started themselves (check its terminal/parent first).
 
 ## Reuse
 
@@ -88,6 +89,12 @@ Copy (don't reinvent):
 - **UI:** Model (Fast "Quick, built in" / Best "Clearest · 10.5 MB download", then "Clearest, slower"); Remove noise with Best downloads first ("Downloading the Best model… 3.2 of 10.5 MB", Cancel); the speed line shows "N× faster than real time".
 - **Training-data note (user-accepted practical rule):** DNS4 includes AudioSet (YouTube audio) and VoxCeleb2; FSD50K is ~11% CC BY-NC clips. All listed in THIRD-PARTY and the mirror's SOURCE.md.
 
+## After the M1–M3 test (user requests, 2026-10-22)
+
+- **RNNoise model mirrored:** `rnnoise_data-0a8755f8….tar.gz` (unchanged) + `LICENSE-RNNOISE.txt` added to `models-v1` (still a pre-release; DPDFNet's file untouched; SOURCE.md and SHA256SUMS updated). `build.rs` tries Xiph, then the mirror (tested with `KREOKIT_RNNOISE_XIPH_URL` pointing at a dead URL).
+- **Installed size on macOS (Intel release build, 2026-10-22):** `KreoKit Voice.app` 40.3 MiB (41.0 MB executable: ONNX Runtime static + RNNoise's ~15 MB of weights; 1.2 MB resources incl. licences). M6 adds the LGPL FFmpeg sidecars (Clips' Intel `ffmpeg` 27.8 MB + `ffprobe` 27.6 MB) → about **96 MB installed**, plus the 10.5 MB Best model in the app data folder on first use.
+- **Best on dual mono** (`clean::channel_difference_db`, `DUAL_MONO_DB = -45`): stereo whose L−R is ≥ 45 dB below (L+R)/2 is cleaned once (the average) and copied to both channels; `CleanMeta.dual_mono`. Measured, 60 s dual-mono file, dev i5, release: processor time **36 s → 17 s (53–55% less)**, wall-clock 19–20 s → 17–18 s (9–13% less; the channels already ran in parallel on two cores); output byte-identical (`dual_mono_saves_time_with_best`, ignored; Linux CI runs it). Fast is unchanged.
+
 ## Core pipeline
 
 1. **Probe + decode** (ffmpeg) to 48 kHz f32, keeping the original channel layout and the video stream info.
@@ -112,9 +119,9 @@ Copy (don't reinvent):
 
 ## Milestones
 
-1. 🔶 **Scaffold** (built 2026-10-21, waiting for the user's test): repo from Clips/Cutout foundations, dev port 1450, Home, probe + decode, waveform + playback.
-2. 🔶 **Fast clean** (built 2026-10-21, waiting for the user's test): licence check, RNNoise (or verified alternative), chunked processing with overlap, Strength, A/B compare, progress + cancel.
-3. 🔶 **Best model** (built 2026-10-22, waiting for the user's test): licence + training-data check, conversion/mirror in `models-v1` (pre-release) if needed, Fast/Best choice, memory check, speed measurement on the dev machine.
+1. ✅ **Scaffold** (tested by the user 2026-10-22): repo from Clips/Cutout foundations, dev port 1450, Home, probe + decode, waveform + playback.
+2. ✅ **Fast clean** (tested by the user 2026-10-22): licence check, RNNoise (or verified alternative), chunked processing with overlap, Strength, A/B compare, progress + cancel.
+3. ✅ **Best model** (tested by the user 2026-10-22): licence + training-data check, conversion/mirror in `models-v1` (pre-release) if needed, Fast/Best choice, memory check, speed measurement on the dev machine.
 4. **Polish + loudness:** analysis (R128), high-pass, de-ess, compression, loudness presets, loudness-matched A/B, echo reduction only if a clean option exists.
 5. **Export + batch + video:** audio formats, video remux with untouched video stream, batch grid, Export all, safe writing, ffprobe checks.
 6. **Release:** reuse the Clips release workflow, `--self-test` (decode a short noisy fixture, clean with each model, check the noise drops by a minimum amount, normalise, export audio + a video remux, verify with ffprobe), draft pre-release v0.1.0-alpha.
