@@ -2,9 +2,6 @@
 //! the Fast noise remover. One [`Denoiser`] per channel; it is a stream, fed 10 ms frames
 //! of 48 kHz audio in order, so a whole recording is cleaned without any chunk edges.
 
-// Used by the cleaning job (next commit).
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::os::raw::{c_int, c_void};
 
 /// Samples per frame (10 ms at 48 kHz).

@@ -281,7 +281,7 @@ pub fn level(peak: f32) -> u8 {
 
 /// Waveform levels from interleaved i16 bytes: the loudest sample of any channel per
 /// 10 ms.
-struct Levels {
+pub(crate) struct Levels {
     channels: usize,
     per_level: usize,
     count: usize,
@@ -290,7 +290,7 @@ struct Levels {
 }
 
 impl Levels {
-    fn new(channels: u16) -> Self {
+    pub(crate) fn new(channels: u16) -> Self {
         Self {
             channels: channels as usize,
             per_level: (SAMPLE_RATE / PEAKS_PER_SECOND) as usize,
@@ -300,7 +300,7 @@ impl Levels {
         }
     }
 
-    fn push(&mut self, bytes: &[u8]) {
+    pub(crate) fn push(&mut self, bytes: &[u8]) {
         for frame in bytes.chunks_exact(self.channels * 2) {
             for sample in frame.chunks_exact(2) {
                 let v = i16::from_le_bytes([sample[0], sample[1]]) as i32;
@@ -319,7 +319,7 @@ impl Levels {
         self.peak = 0;
     }
 
-    fn finish(mut self) -> Vec<u8> {
+    pub(crate) fn finish(mut self) -> Vec<u8> {
         if self.count > 0 {
             self.emit();
         }

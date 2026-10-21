@@ -8,6 +8,12 @@
 #                       resampling, and that both channels are kept
 #   hello-late.mp4      640x360 picture + mono AAC whose audio starts 0.5 s after the picture
 #                       (like phone and screen recordings): decode pads the gap with silence
+#   voices.wav          the clean reference for the quality tests: ~13 s, 48 kHz mono 16-bit,
+#                       two voices (Samantha, Daniel) with pauses between sentences, peaks near
+#                       -4 dBFS. The tests add noise to it at known SNRs (noise made in Rust,
+#                       src-tauri/src/testsignals.rs) and measure what cleaning gives back.
+#   babble.wav          crowd noise for those tests: four other voices (Fred, Karen, Moira,
+#                       Tessa) reading different texts at once, ~11 s, 48 kHz mono 16-bit
 set -euo pipefail
 
 cd "$(dirname "$0")/../fixtures/speech"
@@ -53,4 +59,25 @@ if wanted hello-late.mp4; then
     -c:a aac -b:a 64k -ac 1 -ar 48000 \
     hello-late.mp4
   echo "wrote fixtures/speech/hello-late.mp4 with $encoder"
+fi
+
+if wanted voices.wav; then
+  say -v Samantha -o "$tmp/v1.aiff" "Thanks for listening to this episode. [[slnc 700]] Today we talk about recording at home."
+  say -v Daniel -o "$tmp/v2.aiff" "Good sound makes people stay. [[slnc 700]] A quiet room matters more than an expensive microphone."
+  ffmpeg -nostdin -y -v error -i "$tmp/v1.aiff" -i "$tmp/v2.aiff" \
+    -filter_complex "[0:a]aresample=48000,apad=pad_dur=0.8[a];[1:a]aresample=48000[b];[a][b]concat=n=2:v=0:a=1,adelay=500:all=1,apad=pad_dur=0.5,loudnorm=I=-20:TP=-3:LRA=11:linear=true,aresample=48000" \
+    -ac 1 -ar 48000 -c:a pcm_s16le voices.wav
+  echo "wrote fixtures/speech/voices.wav"
+fi
+
+if wanted babble.wav; then
+  i=0
+  for v in Fred Karen Moira Tessa; do
+    i=$((i + 1))
+    say -v "$v" -o "$tmp/b$i.aiff" "The weather was fine and the market was busy all morning. People were talking about the new bridge, the price of bread and the football match on Sunday evening. Somebody laughed near the door."
+  done
+  ffmpeg -nostdin -y -v error -i "$tmp/b1.aiff" -i "$tmp/b2.aiff" -i "$tmp/b3.aiff" -i "$tmp/b4.aiff" \
+    -filter_complex "[1:a]adelay=700[b];[2:a]adelay=1500[c];[3:a]adelay=2300[d];[0:a][b][c][d]amix=inputs=4:normalize=0,atrim=duration=11.5,aresample=48000,loudnorm=I=-26:TP=-6:linear=true,aresample=48000" \
+    -ac 1 -ar 48000 -c:a pcm_s16le babble.wav
+  echo "wrote fixtures/speech/babble.wav"
 fi

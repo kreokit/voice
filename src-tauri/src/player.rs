@@ -11,7 +11,7 @@
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +19,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use serde::Serialize;
 
+use crate::clean::{DEFAULT_STRENGTH, blend};
 use crate::preview::SAMPLE_RATE;
 
 /// No seek is waiting.
@@ -64,7 +65,14 @@ impl Pcm {
 /// linear interpolation. Mono goes to every output channel; stereo to the first two (a
 /// mono device gets their average). Returns the new position and whether the end was
 /// reached (the rest of `out` is then silence).
-fn render(pcm: &Pcm, mut pos: f64, step: f64, out: &mut [f32], out_channels: usize) -> (f64, bool) {
+fn render(
+    pcm: &Pcm,
+    cleaned: Option<(&Pcm, f32)>,
+    mut pos: f64,
+    step: f64,
+    out: &mut [f32],
+    out_channels: usize,
+) -> (f64, bool) {
     let last = pcm.frames.saturating_sub(1) as f64;
     for (n, frame) in out.chunks_exact_mut(out_channels).enumerate() {
         if pcm.frames == 0 || pos >= last {
@@ -74,9 +82,14 @@ fn render(pcm: &Pcm, mut pos: f64, step: f64, out: &mut [f32], out_channels: usi
         }
         let i = pos as u64;
         let t = (pos - i as f64) as f32;
-        let at = |ch: usize| {
-            let a = pcm.sample(i, ch);
-            a + (pcm.sample(i + 1, ch) - a) * t
+        let lerp = |p: &Pcm, ch: usize| {
+            let a = p.sample(i, ch);
+            a + (p.sample(i + 1, ch) - a) * t
+        };
+        // Cleaned: the cleaned sound blended with the original at the Strength.
+        let at = |ch: usize| match cleaned {
+            Some((c, strength)) => blend(lerp(pcm, ch), lerp(c, ch), strength),
+            None => lerp(pcm, ch),
         };
         if out_channels == 1 && pcm.channels == 2 {
             frame[0] = (at(0) + at(1)) * 0.5;
@@ -100,6 +113,12 @@ fn render(pcm: &Pcm, mut pos: f64, step: f64, out: &mut [f32], out_channels: usi
 #[derive(Default)]
 struct Shared {
     pcm: Mutex<Option<Arc<Pcm>>>,
+    /// The cleaned sound of the same file (same length), when there is one.
+    cleaned: Mutex<Option<Arc<Pcm>>>,
+    /// Listening to the cleaned sound (B) rather than the original (A).
+    listen_cleaned: AtomicBool,
+    /// Strength (0–1) as f32 bits.
+    strength: AtomicU32,
     playing: AtomicBool,
     /// Source frames (48 kHz) as f64 bits.
     position: AtomicU64,
@@ -133,7 +152,17 @@ impl Shared {
             out.fill(0.0);
             return;
         };
-        let (pos, ended) = render(&pcm, self.position(), step, out, out_channels);
+        let cleaned = if self.listen_cleaned.load(Ordering::SeqCst) {
+            self.cleaned.try_lock().ok().and_then(|c| c.clone())
+        } else {
+            None
+        };
+        let strength = f32::from_bits(self.strength.load(Ordering::SeqCst));
+        let mix = cleaned
+            .as_deref()
+            .filter(|c| c.frames == pcm.frames && c.channels == pcm.channels)
+            .map(|c| (c, strength));
+        let (pos, ended) = render(&pcm, mix, self.position(), step, out, out_channels);
         self.set_position(pos);
         if ended {
             self.playing.store(false, Ordering::SeqCst);
@@ -152,6 +181,11 @@ pub struct PlayerState {
     pub playing: bool,
     pub position_ms: f64,
     pub duration_ms: f64,
+    /// A cleaned sound is loaded.
+    pub has_cleaned: bool,
+    /// Listening to the cleaned sound (B) rather than the original (A).
+    pub listen_cleaned: bool,
+    pub strength: f32,
     /// The output failed (e.g. no audio device); playback is stopped.
     pub error: Option<String>,
 }
@@ -170,6 +204,9 @@ impl Default for Player {
     fn default() -> Self {
         let shared = Arc::new(Shared::default());
         shared.pending_seek.store(NO_SEEK, Ordering::SeqCst);
+        shared
+            .strength
+            .store(DEFAULT_STRENGTH.to_bits(), Ordering::SeqCst);
         Self {
             shared,
             commands: Arc::default(),
@@ -183,6 +220,8 @@ impl Player {
     pub fn load(&self, pcm: Pcm, dir: PathBuf) {
         *self.loaded.lock().unwrap() = Some(dir);
         self.shared.playing.store(false, Ordering::SeqCst);
+        *self.shared.cleaned.lock().unwrap() = None;
+        self.shared.listen_cleaned.store(false, Ordering::SeqCst);
         *self.shared.pcm.lock().unwrap() = Some(Arc::new(pcm));
         self.shared.pending_seek.store(NO_SEEK, Ordering::SeqCst);
         self.shared.set_position(0.0);
@@ -194,8 +233,29 @@ impl Player {
         self.shared.playing.store(false, Ordering::SeqCst);
         self.send(Command::Pause);
         *self.shared.pcm.lock().unwrap() = None;
+        *self.shared.cleaned.lock().unwrap() = None;
         self.shared.set_position(0.0);
         *self.loaded.lock().unwrap() = None;
+    }
+
+    /// The cleaned sound of the loaded file (or `None` to release it before it is
+    /// rewritten). Playback goes on at the same position.
+    pub fn set_cleaned(&self, cleaned: Option<Pcm>) {
+        *self.shared.cleaned.lock().unwrap() = cleaned.map(Arc::new);
+    }
+
+    /// A/B: listen to the cleaned sound (true) or the original.
+    pub fn listen_cleaned(&self, cleaned: bool) {
+        self.shared.listen_cleaned.store(cleaned, Ordering::SeqCst);
+    }
+
+    pub fn set_strength(&self, strength: f32) {
+        let s = if strength.is_finite() {
+            strength.clamp(0.0, 1.0)
+        } else {
+            DEFAULT_STRENGTH
+        };
+        self.shared.strength.store(s.to_bits(), Ordering::SeqCst);
     }
 
     /// The cache folder in use, if any.
@@ -260,6 +320,9 @@ impl Player {
             playing: self.shared.playing.load(Ordering::SeqCst),
             position_ms: to_ms(self.shared.position().min(frames as f64)),
             duration_ms: to_ms(frames as f64),
+            has_cleaned: self.shared.cleaned.lock().unwrap().is_some(),
+            listen_cleaned: self.shared.listen_cleaned.load(Ordering::SeqCst),
+            strength: f32::from_bits(self.shared.strength.load(Ordering::SeqCst)),
             error: self.shared.error.lock().unwrap().clone(),
         }
     }
@@ -377,7 +440,7 @@ mod tests {
     fn plays_mono_on_both_speakers() {
         let p = pcm(&[0, 16_384, -16_384, 0], 1);
         let mut out = [9.0; 4];
-        let (pos, ended) = render(&p, 0.0, 1.0, &mut out, 2);
+        let (pos, ended) = render(&p, None, 0.0, 1.0, &mut out, 2);
         assert_eq!(out, [0.0, 0.0, 0.5, 0.5]);
         assert_eq!((pos, ended), (2.0, false));
     }
@@ -386,13 +449,13 @@ mod tests {
     fn stereo_to_stereo_surround_and_mono_devices() {
         let p = pcm(&[16_384, -16_384, 16_384, -16_384, 0, 0], 2);
         let mut stereo = [9.0; 2];
-        render(&p, 0.0, 1.0, &mut stereo, 2);
+        render(&p, None, 0.0, 1.0, &mut stereo, 2);
         assert_eq!(stereo, [0.5, -0.5]);
         let mut surround = [9.0; 6];
-        render(&p, 0.0, 1.0, &mut surround, 6);
+        render(&p, None, 0.0, 1.0, &mut surround, 6);
         assert_eq!(surround, [0.5, -0.5, 0.0, 0.0, 0.0, 0.0]);
         let mut mono = [9.0; 1];
-        render(&p, 0.0, 1.0, &mut mono, 1);
+        render(&p, None, 0.0, 1.0, &mut mono, 1);
         assert_eq!(mono, [0.0]);
     }
 
@@ -403,7 +466,7 @@ mod tests {
         let p = pcm(&ramp, 1);
         let step = 48_000.0 / 44_100.0;
         let mut out = [0.0f32; 50];
-        let (pos, _) = render(&p, 10.0, step, &mut out, 1);
+        let (pos, _) = render(&p, None, 10.0, step, &mut out, 1);
         for (n, v) in out.iter().enumerate() {
             let expected = (10.0 + n as f64 * step) * 100.0 / 32768.0;
             assert!(
@@ -418,10 +481,42 @@ mod tests {
     fn ends_with_silence() {
         let p = pcm(&[16_384, 16_384, 16_384], 1);
         let mut out = [9.0f32; 6];
-        let (pos, ended) = render(&p, 1.0, 1.0, &mut out, 1);
+        let (pos, ended) = render(&p, None, 1.0, 1.0, &mut out, 1);
         assert!(ended);
         assert_eq!(pos, 3.0);
         assert_eq!(out, [0.5, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_b_and_strength() {
+        let original = pcm(&[16_384, 16_384, 16_384, 16_384], 1);
+        let cleaned = pcm(&[0, 0, 0, 0], 1);
+        let mut out = [9.0f32; 2];
+        render(&original, Some((&cleaned, 1.0)), 0.0, 1.0, &mut out, 1);
+        assert_eq!(out, [0.0, 0.0], "fully cleaned");
+        render(&original, Some((&cleaned, 0.75)), 0.0, 1.0, &mut out, 1);
+        assert_eq!(out, [0.125, 0.125], "a quarter of the original left");
+
+        // Through the player: A/B switches at the same position.
+        let player = Player::default();
+        player.load(original_pcm(), PathBuf::from("/cache/a"));
+        assert!(!player.state().has_cleaned);
+        player.set_cleaned(Some(pcm(&vec![0; 48_000], 1)));
+        player.listen_cleaned(true);
+        player.set_strength(0.5);
+        player.seek_ms(500.0);
+        let state = player.state();
+        assert!(state.has_cleaned && state.listen_cleaned);
+        assert_eq!((state.strength, state.position_ms), (0.5, 500.0));
+        player.set_strength(f32::NAN);
+        assert_eq!(player.state().strength, DEFAULT_STRENGTH);
+        // A new file starts on the original, without a cleaned sound.
+        player.load(original_pcm(), PathBuf::from("/cache/b"));
+        assert!(!player.state().has_cleaned && !player.state().listen_cleaned);
+    }
+
+    fn original_pcm() -> Pcm {
+        pcm(&vec![1_000; 48_000], 1)
     }
 
     #[test]
@@ -447,6 +542,7 @@ mod tests {
     fn the_callback_applies_seeks_and_stops_at_the_end() {
         let shared = Shared::default();
         shared.pending_seek.store(NO_SEEK, Ordering::SeqCst);
+        shared.strength.store(1.0f32.to_bits(), Ordering::SeqCst);
         *shared.pcm.lock().unwrap() = Some(Arc::new(pcm(&[0, 1_000, 2_000, 3_000, 4_000], 1)));
         let mut out = [0.0f32; 2];
         // Paused: silence, position unchanged.

@@ -1,10 +1,14 @@
+mod clean;
 mod disk;
 mod ffmpeg;
+mod metrics;
 mod player;
 mod preview;
 mod probe;
 mod recent;
 mod rnnoise;
+#[cfg(test)]
+mod testsignals;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,6 +59,7 @@ fn recent_file(path: &Path, info: &probe::MediaInfo) -> recent::RecentFile {
         opened_at: recent::now_ms(),
         duration_ms: info.duration_ms,
         is_video: info.video.is_some(),
+        settings: recent::FileSettings::default(),
     }
 }
 
@@ -200,6 +205,125 @@ async fn waveform(app: AppHandle, path: PathBuf) -> Result<tauri::ipc::Response,
     blocking(move || preview::peaks(&dir).map(tauri::ipc::Response::new)).await
 }
 
+/// The running cleaning job's cancel flag; a new one cancels the previous.
+#[derive(Default)]
+struct CleanJob(Mutex<Option<Arc<AtomicBool>>>);
+
+/// Whether `path` already has a cleaned sound (from an earlier session).
+#[tauri::command]
+async fn clean_status(app: AppHandle, path: PathBuf) -> Result<Option<clean::CleanMeta>, String> {
+    let dir = preview::dir_for(&preview_root(&app)?, &path);
+    blocking(move || {
+        Ok(preview::cached(&dir, &path).and_then(|preview| clean::cached(&dir, &preview)))
+    })
+    .await
+}
+
+/// Removes the noise of `path` (its preview must be ready), with `clean-progress` events.
+/// When `path` is the file being played, its cleaned sound is loaded into the player.
+#[tauri::command]
+async fn clean_file(app: AppHandle, path: PathBuf) -> Result<clean::CleanMeta, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Some(previous) = app
+        .state::<CleanJob>()
+        .0
+        .lock()
+        .unwrap()
+        .replace(cancel.clone())
+    {
+        previous.store(true, Ordering::SeqCst);
+    }
+    let dir = preview::dir_for(&preview_root(&app)?, &path);
+    let player = app.state::<player::Player>();
+    let playing_this = player.loaded().as_ref() == Some(&dir);
+    if playing_this {
+        // Its cleaned file is about to be replaced: release the old mapping.
+        player.set_cleaned(None);
+    }
+    let events = app.clone();
+    let (job_dir, job_path) = (dir.clone(), path.clone());
+    let meta = blocking(move || {
+        let preview = preview::cached(&job_dir, &job_path).ok_or("the preview isn't ready")?;
+        let meta = clean::prepare(&job_dir, &preview, &cancel, |fraction| {
+            let _ = events.emit(
+                "clean-progress",
+                PreviewProgress {
+                    path: job_path.clone(),
+                    fraction,
+                },
+            );
+        })?;
+        Ok((preview, meta))
+    })
+    .await;
+    let (preview, meta) = meta?;
+    if playing_this && player.loaded().as_ref() == Some(&dir) {
+        player.set_cleaned(Some(player::Pcm::open(
+            &clean::audio_path(&dir),
+            preview.channels,
+        )?));
+    }
+    Ok(meta)
+}
+
+#[tauri::command]
+fn cancel_clean(app: AppHandle) {
+    if let Some(job) = app.state::<CleanJob>().0.lock().unwrap().take() {
+        job.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The cleaned sound's waveform (like `waveform`).
+#[tauri::command]
+async fn cleaned_waveform(app: AppHandle, path: PathBuf) -> Result<tauri::ipc::Response, String> {
+    let dir = preview::dir_for(&preview_root(&app)?, &path);
+    blocking(move || clean::peaks(&dir).map(tauri::ipc::Response::new)).await
+}
+
+/// Loads `path`'s cleaned sound (if there is one) next to its preview in the player.
+#[tauri::command]
+async fn player_load_cleaned(app: AppHandle, path: PathBuf) -> Result<player::PlayerState, String> {
+    let dir = preview::dir_for(&preview_root(&app)?, &path);
+    let player = app.state::<player::Player>();
+    if player.loaded().as_ref() == Some(&dir) {
+        let found =
+            preview::cached(&dir, &path).and_then(|p| clean::cached(&dir, &p).map(|_| p.channels));
+        if let Some(channels) = found {
+            player.set_cleaned(Some(player::Pcm::open(&clean::audio_path(&dir), channels)?));
+        }
+    }
+    Ok(player.state())
+}
+
+/// A/B: the cleaned sound (true) or the original.
+#[tauri::command]
+fn player_listen(player: tauri::State<player::Player>, cleaned: bool) -> player::PlayerState {
+    player.listen_cleaned(cleaned);
+    player.state()
+}
+
+#[tauri::command]
+fn player_strength(player: tauri::State<player::Player>, strength: f32) -> player::PlayerState {
+    player.set_strength(strength);
+    player.state()
+}
+
+#[tauri::command]
+async fn file_settings(app: AppHandle, path: String) -> Result<recent::FileSettings, String> {
+    let dir = data_dir(&app)?;
+    blocking(move || Ok(recent::settings(&dir, &path))).await
+}
+
+#[tauri::command]
+async fn save_settings(
+    app: AppHandle,
+    path: String,
+    settings: recent::FileSettings,
+) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    blocking(move || recent::save_settings(&dir, &path, settings)).await
+}
+
 /// Loads `path`'s finished preview into the player, stopped at the start.
 #[tauri::command]
 async fn player_open(app: AppHandle, path: PathBuf) -> Result<player::PlayerState, String> {
@@ -280,6 +404,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(PreviewJob::default())
+        .manage(CleanJob::default())
         .manage(player::Player::default())
         .invoke_handler(tauri::generate_handler![
             probe_media,
@@ -290,6 +415,15 @@ pub fn run() {
             prepare_preview,
             cancel_preview,
             waveform,
+            clean_status,
+            clean_file,
+            cancel_clean,
+            cleaned_waveform,
+            player_load_cleaned,
+            player_listen,
+            player_strength,
+            file_settings,
+            save_settings,
             player_open,
             player_close,
             player_play,
@@ -306,6 +440,7 @@ pub fn run() {
             // Quitting stops the decode, so its FFmpeg ends with the app.
             if let tauri::RunEvent::Exit = event {
                 cancel_preview(app.clone());
+                cancel_clean(app.clone());
                 app.state::<player::Player>().unload();
             }
         });
