@@ -1,7 +1,24 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Bug, Ellipsis } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Bug, Ellipsis, FolderOpen, House } from "lucide-react";
 import mark from "../assets/kreokit-mark.png";
+import { MEDIA_EXTENSIONS } from "../lib/files";
+import { openPaths } from "../store/session";
 import { Menu, MenuEntry, toast } from "../ui";
+
+const FILTERS = [{ name: "Audio or video", extensions: MEDIA_EXTENSIONS }];
+
+/** The open-file dialog for one file. Resolves to the picked path, or null. */
+export async function pickFile(title = "Open file"): Promise<string | null> {
+  const picked = await open({ title, multiple: false, directory: false, filters: FILTERS });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Picks one or more files, adds them to Recent and opens the first. */
+export async function chooseFiles() {
+  const picked = await open({ title: "Open files", multiple: true, directory: false, filters: FILTERS });
+  if (picked) await openPaths(Array.isArray(picked) ? picked : [picked]);
+}
 
 /**
  * The 48 px app bar: logo mark, title, the ⋯ menu and screen actions (`children`).
@@ -18,7 +35,9 @@ export function TopBar({
   children?: React.ReactNode;
 }) {
   const items: MenuEntry[] = [
-    ...(onHome ? [{ label: "Back to Home", onSelect: onHome }, "separator" as const] : []),
+    { label: "Open files…", icon: FolderOpen, shortcut: "⌘O", onSelect: () => void chooseFiles() },
+    ...(onHome ? [{ label: "Back to Home", icon: House, onSelect: onHome }] : []),
+    "separator",
     {
       label: "Report a problem",
       icon: Bug,
