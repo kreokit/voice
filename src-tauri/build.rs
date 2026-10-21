@@ -73,6 +73,15 @@ fn build_rnnoise() {
         let mut avx = base();
         avx.file(src.join("x86/nnet_avx2.c"));
         if msvc {
+            // MSVC doesn't define __SSE4_1__; Xiph's x86_arch_macros.h maps these to it.
+            for name in [
+                "OPUS_X86_MAY_HAVE_SSE",
+                "OPUS_X86_MAY_HAVE_SSE2",
+                "OPUS_X86_MAY_HAVE_SSE4_1",
+            ] {
+                sse.define(name, None);
+            }
+            // /arch:AVX2 defines __AVX2__.
             avx.flag("/arch:AVX2");
         } else {
             sse.flag("-msse4.1");
