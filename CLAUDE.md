@@ -1,6 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
+**Status (2026-10-21):** repo set up from the Clips foundations (`kreokit/voice`, CI green). Model research for M2–M4 done, waiting for the user's decision: see `docs/model-research.md` (nnnoiseless's built-in weights and DeepFilterNet 3 fail the checks). M1 planned, not started.
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
