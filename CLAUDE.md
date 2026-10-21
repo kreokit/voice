@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-21):** milestone 1 (Scaffold) built and checked in the app on the dev Mac; waiting for the user's test. Models decided (see "Models"); the question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
+**Status (2026-10-21):** milestones 1 (Scaffold) and 2 (Fast clean) built and checked in the app on the dev Mac; waiting for the user's test. Models decided (see "Models"); the question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -68,6 +68,15 @@ Copy (don't reinvent):
 - **Testing the app on the dev Mac:** synthetic clicks (Swift CGEvent helper in the scratchpad) only reach the window when it is frontmost: `osascript -e 'tell application "System Events" to set frontmost of process "voice" to true'` before each click; window points = screenshot pixels / 2.
 - **Watch at release (M6):** cpal pulls in objc2 CoreAudio/AVFAudio bindings: check weak imports with `check_macos_binary.py` on the release build for macOS 12. Linux links the system `libasound` (LGPL, dynamic; noted in THIRD-PARTY): check whether the AppImage bundles it and keep the notice. CI installs `libasound2-dev`.
 
+## Fast clean (milestone 2, built 2026-10-21)
+
+- **RNNoise v0.2** (`src-tauri/rnnoise/`, `rnnoise.rs`): Xiph's library sources (BSD-3) vendored at commit `70f1d25`; `build.rs` downloads `rnnoise_data-<model_version>.tar.gz` from media.xiph.org once, checks its SHA-256 (Xiph's scheme), unpacks `src/rnnoise_data.c` (78 MB of C) into OUT_DIR and compiles it in (22 s, 1.5 GB RAM on the dev Mac; ~15 MB in the binary), so the app downloads nothing for Fast. `KREOKIT_RNNOISE_MODEL=/path/tarball` builds offline. x86: Xiph's runtime CPU detection (`RNN_ENABLE_X86_RTCD`, SSE4.1/AVX2 files with their own flags; MSVC needs `OPUS_X86_MAY_HAVE_SSE4_1` etc. for `__SSE4_1__`); identical output and speed to an AVX2-only build. ARM: NEON. The C is compiled at -O2 even in dev. **M6:** consider mirroring the model tarball in our own release for build robustness.
+- **Delay measured: 960 samples (20 ms)** on speech (`measures_the_delay`, correlation 0.99), not one frame. `clean::Cleaner` drops it, so output sample i lines up with input sample i and the output is exactly as long as the input. One streaming denoiser per channel (stereo in parallel threads), no chunk edges (`same_result_whatever_the_block_size`).
+- **Cleaning job** (`clean::prepare`): cleans the 16-bit preview (not a new decode: same length and alignment as what it's compared with; 16-bit rounding is far below what RNNoise reacts to) into `clean-fast.pcm` + `clean-fast.peaks` + `clean-fast.json` (model id, frames, realtime factor) in the preview folder, via a `.part` file. Stereo on the dev Mac: ~11× faster than real time (RTF 0.09). **Export (M5) must clean the original in f32**, not the preview.
+- **Strength = dry/wet blend, applied in the player** (instant, never re-runs the model; `clean::blend`). Noise left in pauses = 20·log10(1 − s) dB. **Default 85%**, measured: −16.5 dB in pauses, clean speech keeps 17.8 dB SI-SDR (16.4 at 100%), steady noise within 0.3 dB of the best SI-SDR (peak at 70–90%). Saved per file in `recent.json` (`settings.strength`, kept on reopen and Locate).
+- **A/B:** the player mixes the cleaned sound at the same sample (`listen_cleaned`); Original/Cleaned control under the transport, key B. Loudness matching comes in M4. The waveform draws the original dim and the cleaned sound at the current Strength in front (`blendLevel`).
+- **Quality oracle** (`clean::tests::quality_on_every_noise`, `metrics.rs`, `testsignals.rs`): `fixtures/speech/voices.wav` (two `say` voices, 13 s, pauses) mixed with seeded Rust-made noises (room = pink, fan = brown, 50 Hz hum + harmonics, keyboard clicks, gusty wind) and `babble.wav` (four `say` voices), at 0/5/10 dB SNR. **Baseline 2026-10-21 (full strength):** steady noises SI-SDR +3.3…+13.8 dB, noise in pauses −29…−46 dB; **babble: SI-SDR −2…−6 dB** (RNNoise can't separate other voices; pauses still −5…−10 dB); clean speech in → 16.4 dB SI-SDR. Asserted: steady > +2.3 dB and pauses < −25 dB; babble pauses < −3 dB; clean speech > 15 dB (full) and > 16.5 dB (default). These are the numbers DPDFNet must clearly beat in M3.
+
 ## Core pipeline
 
 1. **Probe + decode** (ffmpeg) to 48 kHz f32, keeping the original channel layout and the video stream info.
@@ -93,7 +102,7 @@ Copy (don't reinvent):
 ## Milestones
 
 1. 🔶 **Scaffold** (built 2026-10-21, waiting for the user's test): repo from Clips/Cutout foundations, dev port 1450, Home, probe + decode, waveform + playback.
-2. **Fast clean:** licence check, RNNoise (or verified alternative), chunked processing with overlap, Strength, A/B compare, progress + cancel.
+2. 🔶 **Fast clean** (built 2026-10-21, waiting for the user's test): licence check, RNNoise (or verified alternative), chunked processing with overlap, Strength, A/B compare, progress + cancel.
 3. **Best model:** licence + training-data check, conversion/mirror in `models-v1` (pre-release) if needed, Fast/Best choice, memory check, speed measurement on the dev machine.
 4. **Polish + loudness:** analysis (R128), high-pass, de-ess, compression, loudness presets, loudness-matched A/B, echo reduction only if a clean option exists.
 5. **Export + batch + video:** audio formats, video remux with untouched video stream, batch grid, Export all, safe writing, ffprobe checks.
