@@ -1,0 +1,24 @@
+name: Feature idea
+description: Suggest something that would make KreoKit Voice better.
+title: "[Idea] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation or problem, e.g. "I record two people on one track and want both equally loud".
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How could the app help? Rough is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Examples or screenshots
+      description: Optional. Sketches, screenshots or links that show what you mean.

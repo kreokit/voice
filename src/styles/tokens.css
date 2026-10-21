@@ -1,0 +1,83 @@
+/*
+ * KreoKit design tokens: the one place for colours, type, spacing, radii and sizes.
+ * Flat design: solid colours only. Depth comes from background steps and 1px borders;
+ * no gradients, shadows or blur. Components use these variables, never raw values.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, darkest to lightest */
+  --color-stage: #0a0a0c; /* video stage, timeline track */
+  --color-bg: #0e0e10; /* app base */
+  --color-surface-1: #151518; /* top bar, inspector, timeline panel */
+  --color-surface-2: #1c1c20; /* inputs, hovered rows, tiles */
+  --color-surface-3: #26262b; /* pressed / selected (neutral), caption blocks */
+
+  /* Lines */
+  --color-border: #2a2a30;
+  --color-border-strong: #3a3a42;
+
+  /* Text */
+  --color-text: #f4f4f5;
+  --color-text-2: #a1a1aa; /* secondary, timecodes */
+  --color-text-3: #71717a; /* hints, placeholders; non-essential only */
+
+  /* Brand accent: electric lime, used sparingly */
+  --color-accent: #c8f135;
+  --color-accent-hover: #d6f75e;
+  --color-accent-press: #b3da24;
+  --color-on-accent: #0e0e10;
+  --color-accent-tint: #232914; /* selected row / block fill */
+
+  /* Status */
+  --color-danger: #ff5a5f;
+  --color-warning: #ffb020;
+
+  /* Timeline */
+  --color-waveform: #4a4a52;
+  --color-waveform-active: #6b6b75;
+
+  /* Dialog backdrop: solid colour at 70%, no blur */
+  --color-backdrop: rgb(14 14 16 / 0.7);
+
+  /* Type: Inter Variable, bundled (OFL-1.1) */
+  --font-ui: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --text-label: 600 11px/16px var(--font-ui); /* uppercase section labels */
+  --text-meta: 500 12px/16px var(--font-ui); /* timecodes, meta */
+  --text-body: 400 13px/20px var(--font-ui); /* UI default */
+  --text-title: 600 15px/20px var(--font-ui); /* panel titles */
+  --text-dialog: 700 20px/28px var(--font-ui); /* dialog titles */
+  --text-hero: 700 32px/40px var(--font-ui); /* Home heading */
+  --tracking-label: 0.06em;
+
+  /* Spacing: 4 px grid */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* Radii: small and consistent */
+  --radius-sm: 4px; /* inputs, chips, caption blocks */
+  --radius-md: 6px; /* buttons, rows, menus */
+  --radius-lg: 8px; /* panels, tiles, dialogs */
+
+  /* Fixed sizes */
+  --size-topbar: 48px;
+  --size-inspector: 360px;
+  --size-timeline: 176px;
+  --size-timeline: 176px;
+  --size-row-min: 44px;
+  --size-control: 32px; /* buttons, inputs */
+  --size-control-sm: 28px;
+
+  /* Focus: 2px lime ring with a 2px gap */
+  --focus-ring: 2px solid var(--color-accent);
+  --focus-offset: 2px;
+
+  /* Motion: short and plain */
+  --duration-fast: 100ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}

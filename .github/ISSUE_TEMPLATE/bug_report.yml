@@ -1,0 +1,66 @@
+name: Bug report
+description: Something doesn't work, crashes or looks wrong.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing KreoKit Voice! A few details help a lot. Please don't attach recordings you don't want to be public.
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: System version
+      placeholder: e.g. macOS 12.7, Windows 11 23H2, Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: computer
+    attributes:
+      label: Computer
+      description: Model, processor and memory, if you know them.
+      placeholder: e.g. MacBook Pro 2016, Intel Core i5, 16 GB
+  - type: input
+    id: version
+    attributes:
+      label: KreoKit Voice version
+      placeholder: e.g. 0.1.0-alpha
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and any error message shown.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Drop a 20-minute WAV podcast recording
+        2. Clean it with the Fast model
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or screen recording
+      description: Drag screenshots into this box. If a recording causes it, say how long it is, its format and where it came from (phone, microphone, camera, screen recording…) instead of attaching it.

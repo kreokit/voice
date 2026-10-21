@@ -1,0 +1,109 @@
+/* App shell: the top bar shared by all screens (from KreoKit Cutout). */
+
+/* Every screen: the top bar above its content. */
+.screen {
+  display: grid;
+  grid-template-rows: var(--size-topbar) minmax(0, 1fr);
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-3) 0 var(--space-4);
+  background: var(--color-surface-1);
+  border-bottom: 1px solid var(--color-border);
+  min-width: 0;
+}
+
+/* macOS: the window buttons sit inside the bar (tauri.macos.conf.json). */
+.platform-mac .topbar {
+  padding-left: 84px;
+}
+
+.topbar-mark {
+  flex: none;
+  border-radius: var(--radius-sm);
+}
+
+.topbar-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.topbar-name {
+  font: var(--text-meta);
+  font-weight: 500;
+  color: var(--color-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Section headings on Home and in panels */
+.section-title {
+  font: var(--text-label);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+
+/* Unsupported CPU dialog */
+
+.cpu-check-text {
+  color: var(--color-text-2);
+  margin-bottom: var(--space-3);
+}
+
+.cpu-check-text:last-child {
+  margin-bottom: 0;
+}
+
+/* A video frame: the image (or a film icon) contained in the box. The explicit width
+   matters: macOS 12's WebKit doesn't size an aspect-ratio box from a stretched flex width
+   when its only children are absolutely placed (KreoKit Cutout). */
+.thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  background: var(--color-stage);
+  color: var(--color-text-3);
+}
+
+.thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.thumb svg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* Body text in dialogs */
+.dialog-text {
+  color: var(--color-text-2);
+}
+
+/* Placeholder content until a screen fills it */
+.shell-empty {
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+}

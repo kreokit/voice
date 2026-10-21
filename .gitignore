@@ -1,0 +1,37 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.sw?
+
+# Rust build output (also in src-tauri/.gitignore)
+src-tauri/target/
+
+# AI models are downloaded into the app data dir; never commit them
+*.onnx
+*.onnx_data
+*.onnx.part
+*.bin
+*.tflite
+/models/
+
+# FFmpeg sidecars are fetched by CI (src-tauri/binaries/README.md)
+src-tauri/binaries/ffmpeg-*
+src-tauri/binaries/ffprobe-*
+src-tauri/binaries/FFMPEG-LICENSE.txt
+/target-ffmpeg/
+
+# Python bytecode
+__pycache__/
