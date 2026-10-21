@@ -261,6 +261,42 @@ pub struct CleanMeta {
     pub frames: u64,
     /// Seconds of work per second of sound (cleaning time / duration).
     pub realtime_factor: f64,
+    /// A stereo file whose channels are the same sound (dual mono): Best cleaned their
+    /// average once and wrote it to both ([`DUAL_MONO_DB`]).
+    #[serde(default)]
+    pub dual_mono: bool,
+}
+
+/// Stereo counts as dual mono when the channels' difference (L − R) is at least this far
+/// below their average ((L + R) / 2): the same microphone on both sides, give or take
+/// encoding noise. Real stereo is far above it.
+pub const DUAL_MONO_DB: f64 = -45.0;
+
+/// How far the channels' difference is below their average, in dB, over the whole
+/// interleaved 16-bit stereo preview (−inf when identical).
+pub fn channel_difference_db(preview_pcm: &Path) -> Result<f64, String> {
+    let mut input = BufReader::with_capacity(
+        1 << 20,
+        File::open(preview_pcm).map_err(|e| format!("cannot read the preview: {e}"))?,
+    );
+    let mut bytes = vec![0u8; 1 << 20];
+    let (mut diff, mut mid) = (0f64, 0f64);
+    loop {
+        let n = read_full(&mut input, &mut bytes)?;
+        if n == 0 {
+            break;
+        }
+        for f in bytes[..n].chunks_exact(4) {
+            let l = i16::from_le_bytes([f[0], f[1]]) as f64;
+            let r = i16::from_le_bytes([f[2], f[3]]) as f64;
+            diff += (l - r) * (l - r);
+            mid += (l + r) * (l + r) / 4.0;
+        }
+    }
+    if diff == 0.0 {
+        return Ok(f64::NEG_INFINITY);
+    }
+    Ok(10.0 * (diff / mid.max(f64::MIN_POSITIVE)).log10())
 }
 
 pub fn audio_path(dir: &Path, model: Model) -> PathBuf {
@@ -310,12 +346,17 @@ pub fn prepare(
         return Ok(meta);
     }
     let part = dir.join(format!("clean-{}.pcm.part", model.name()));
+    // Best on dual mono: one channel's work instead of two (the user's request, 2026-10-22).
+    let dual_mono = model == Model::Best
+        && preview.channels == 2
+        && channel_difference_db(&preview::audio_path(dir))? <= DUAL_MONO_DB;
     let result = clean_preview(
         dir,
         &part,
         preview,
         model,
         models_dir,
+        dual_mono,
         cancel,
         &mut progress,
     );
@@ -331,12 +372,14 @@ fn clean_preview(
     preview: &preview::Meta,
     model: Model,
     models_dir: &Path,
+    dual_mono: bool,
     cancel: &AtomicBool,
     progress: &mut impl FnMut(f64),
 ) -> Result<CleanMeta, String> {
     let started = std::time::Instant::now();
     let channels = preview.channels as usize;
-    let engines = (0..channels)
+    // Dual mono: one engine on the channels' average; its output goes to both.
+    let engines = (0..if dual_mono { 1 } else { channels })
         .map(|_| Engine::new(model, models_dir))
         .collect::<Result<Vec<_>, _>>()?;
     let mut cleaner = Cleaner::with(engines);
@@ -356,10 +399,14 @@ fn clean_preview(
     let mut samples = Vec::with_capacity(block / 2);
     let mut cleaned = Vec::with_capacity(block / 2);
     let mut done = 0u64;
+    let copies = if dual_mono { 2 } else { 1 };
     let mut write = |cleaned: &mut Vec<f32>, levels: &mut Levels| -> Result<(), String> {
         let out: Vec<u8> = cleaned
             .iter()
-            .flat_map(|s| ((s * 32768.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes())
+            .flat_map(|s| {
+                let v = ((s * 32768.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes();
+                std::iter::repeat_n(v, copies).flatten()
+            })
             .collect();
         levels.push(&out);
         cleaned.clear();
@@ -376,11 +423,16 @@ fn clean_preview(
             break;
         }
         samples.clear();
-        samples.extend(
-            bytes[..n]
-                .chunks_exact(2)
-                .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0),
-        );
+        let value = |b: &[u8]| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0;
+        if dual_mono {
+            samples.extend(
+                bytes[..n]
+                    .chunks_exact(4)
+                    .map(|f| (value(&f[..2]) + value(&f[2..])) * 0.5),
+            );
+        } else {
+            samples.extend(bytes[..n].chunks_exact(2).map(value));
+        }
         cleaner.push(&samples, &mut cleaned)?;
         write(&mut cleaned, &mut levels)?;
         done += (n / (channels * 2)) as u64;
@@ -410,6 +462,7 @@ fn clean_preview(
         frames: preview.frames,
         // Rounded: JSON doesn't give every f64 back exactly, and 4 decimals is plenty.
         realtime_factor: (started.elapsed().as_secs_f64() / seconds.max(1e-3) * 1e4).round() / 1e4,
+        dual_mono,
     };
     let json = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
     fs::write(meta_path(dir, model), json).map_err(|e| e.to_string())?;
@@ -602,5 +655,125 @@ mod tests {
             |_| {},
         );
         assert!(err.is_err());
+    }
+
+    fn write_pcm(path: &Path, frames: &[(i16, i16)]) {
+        let bytes: Vec<u8> = frames
+            .iter()
+            .flat_map(|(l, r)| [l.to_le_bytes(), r.to_le_bytes()].concat())
+            .collect();
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn tells_dual_mono_from_stereo() {
+        let dir = std::env::temp_dir().join("kreokit-voice-dual-mono");
+        fs::create_dir_all(&dir).unwrap();
+        let pcm = dir.join("audio.pcm");
+        let voice: Vec<i16> = wav("hello-mono.wav")
+            .iter()
+            .map(|s| (s * 32767.0) as i16)
+            .collect();
+        // The same channel twice.
+        write_pcm(&pcm, &voice.iter().map(|&v| (v, v)).collect::<Vec<_>>());
+        assert_eq!(channel_difference_db(&pcm).unwrap(), f64::NEG_INFINITY);
+        // Encoding noise on one side (±1 LSB): still dual mono.
+        let jittered: Vec<_> = voice
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| (v, v.saturating_add((i % 3) as i16 - 1)))
+            .collect();
+        write_pcm(&pcm, &jittered);
+        assert!(channel_difference_db(&pcm).unwrap() <= DUAL_MONO_DB);
+        // Two different voices (the stereo fixture's idea): far above.
+        let other: Vec<i16> = wav("voices.wav")
+            .iter()
+            .map(|s| (s * 32767.0) as i16)
+            .collect();
+        let stereo: Vec<_> = voice.iter().zip(&other).map(|(&l, &r)| (l, r)).collect();
+        write_pcm(&pcm, &stereo);
+        assert!(channel_difference_db(&pcm).unwrap() > -10.0);
+        // A little width (the right channel 10% quieter): not dual mono either.
+        let wide: Vec<_> = voice
+            .iter()
+            .map(|&v| (v, (v as f32 * 0.9) as i16))
+            .collect();
+        write_pcm(&pcm, &wide);
+        assert!(channel_difference_db(&pcm).unwrap() > DUAL_MONO_DB);
+    }
+
+    /// Best on a 60 s dual-mono noisy file, both ways: the time saved and that the result
+    /// is the same. `cargo test --release dual_mono_saves -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(unix)]
+    fn dual_mono_saves_time_with_best() {
+        let models = crate::models::tests::models_dir_for_tests();
+        let dir = std::env::temp_dir().join("kreokit-voice-dual-mono-best");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // 60 s: the voices fixture looped, with fan noise, the same on both channels.
+        let speech = wav("voices.wav");
+        let long: Vec<f32> = speech.iter().copied().cycle().take(48_000 * 60).collect();
+        let noisy = mix(&long, &noise(Noise::Fan, long.len(), 3), 5.0);
+        let frames: Vec<(i16, i16)> = noisy
+            .iter()
+            .map(|s| {
+                let v = (s * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                (v, v)
+            })
+            .collect();
+        write_pcm(&preview::audio_path(&dir), &frames);
+        let meta = preview::Meta {
+            version: 1,
+            source_size: 0,
+            source_modified_ms: 0,
+            channels: 2,
+            frames: frames.len() as u64,
+        };
+        // Processor time of this process (user + system), in seconds.
+        let cpu = || {
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            // SAFETY: a valid out pointer.
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+            let secs = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+            secs(usage.ru_utime) + secs(usage.ru_stime)
+        };
+        let run = |dual: bool| {
+            let part = dir.join("clean.part");
+            let cpu_before = cpu();
+            let started = std::time::Instant::now();
+            let m = clean_preview(
+                &dir,
+                &part,
+                &meta,
+                Model::Best,
+                &models,
+                dual,
+                &AtomicBool::new(false),
+                &mut |_| {},
+            )
+            .unwrap();
+            let seconds = started.elapsed().as_secs_f64();
+            let cpu_seconds = cpu() - cpu_before;
+            let out = fs::read(audio_path(&dir, Model::Best)).unwrap();
+            (m, seconds, cpu_seconds, out)
+        };
+        let (both, t_both, cpu_both, out_both) = run(false);
+        let (one, t_one, cpu_one, out_one) = run(true);
+        eprintln!(
+            "processor time: both channels {cpu_both:.1} s, one channel copied {cpu_one:.1} s: {:.0}% less",
+            100.0 * (1.0 - cpu_one / cpu_both)
+        );
+        assert!(!both.dual_mono && one.dual_mono);
+        eprintln!(
+            "60 s dual-mono stereo with Best: both channels {t_both:.1} s (RTF {:.3}), one channel copied {t_one:.1} s (RTF {:.3}): {:.0}% less time",
+            both.realtime_factor,
+            one.realtime_factor,
+            100.0 * (1.0 - t_one / t_both)
+        );
+        // Identical channels: processing one gives the same sound, sample for sample.
+        assert_eq!(out_both.len(), out_one.len());
+        assert!(out_both == out_one, "the shortcut changed the result");
     }
 }
