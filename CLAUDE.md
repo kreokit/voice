@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-21):** repo set up from the Clips foundations (`kreokit/voice`, CI green). Model research for M2–M4 done, waiting for the user's decision: see `docs/model-research.md` (nnnoiseless's built-in weights and DeepFilterNet 3 fail the checks). M1 planned, not started.
+**Status (2026-10-21):** repo set up from the Clips foundations (`kreokit/voice`, CI green). Model research done (`docs/model-research.md`) and models decided by the user (see "Models"). Milestone 1 (Scaffold) in progress.
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -18,6 +18,7 @@ Target users: creators worldwide (podcasts, voice-overs, talking-head videos, Ti
 - **No proprietary code or assets.** Build only from public docs, open-source libraries and observed behaviour. Never copy another product's name, logo, icons or exact UI.
 - **Offline first.** No servers, no accounts, no telemetry, no cloud AI APIs. The only network calls are one-time model downloads from our own mirror releases.
 - **Licences must stay MIT/Apache-compatible, including model weights and their training data.** Only MIT / Apache-2.0 / BSD weights. Verify every model's licence from its official source **and check what its training data was and under which licences**, before adding it. Never use non-commercial or research-only weights. Record everything in `THIRD-PARTY-LICENSES.md`. Mirror model files in a `models-v1` release on `kreokit/voice` with licence + SOURCE.md + SHA256SUMS, **created as a pre-release** (no release in any KreoKit repo shows "Latest"). Apps download models only by tag, never `/releases/latest`.
+- **Model licence rule (decided by the user, 2026-10-21):** a model's weights need an **explicit permissive licence (MIT / Apache-2.0 / BSD) from the publisher** (a licence file covering the weights, or the official model card); a code licence that says "all code" does not count. **No non-commercial or research-only terms** in the model's own licence or card. **Training data checked and documented** in `THIRD-PARTY-LICENSES.md` (each dataset and its licence; open-licence data such as CC BY / CC BY-SA is acceptable). When two options work, **prefer the cleaner one**.
 - **FFmpeg: LGPL-only sidecars**, built and checked exactly as Captions/Clips do. Never use GPL-only filters (e.g. `boxblur`, `arnndn` if it is GPL in our build, anything needing `--enable-gpl`). Add a test that keeps GPL-only filters out of every FFmpeg command, like Clips.
 - Every commit builds and passes `cargo test` and `pnpm test` on its own. Small topic-based commits. **Push after every step**, so a session limit never leaves work uncommitted.
 - **Never modify the user's real files or projects for testing, not even temporarily.** Test on copies.
@@ -47,13 +48,12 @@ Copy (don't reinvent):
 - Noise removal models (verify licences first; see "Models")
 - No projects in v0.1: recent files list + per-file settings, like Cutout.
 
-## Models (verify each before use; stop and ask if anything is unclear)
+## Models (decided by the user, 2026-10-21; research in `docs/model-research.md`)
 
-Candidates, in order of preference:
-- **Fast:** RNNoise (Xiph, BSD-3), e.g. via the pure-Rust `nnnoiseless` port (check its licence and that its built-in weights are the BSD RNNoise weights). Tiny, real-time, no download needed if the weights are compiled in.
-- **Best:** DeepFilterNet 3 (full-band 48 kHz). Code is MIT/Apache-2.0; **verify the weights' licence and the training data** (DNS Challenge and other sets; check each set's licence) before using it. Run it via its Rust implementation or ONNX through `ort`, whichever is pinned-version-safe on Intel macOS 12.
-- **Echo / reverb reduction:** research permissively licensed options (model or DSP). If none is good and clean, ship v0.1 without a dedicated de-reverb and say so in the UI ("Noise removal; room echo reduction is coming"). Do not use non-commercial models.
-- If a candidate fails the licence or training-data check, stop and present the alternatives with their licences.
+- **Fast: RNNoise v0.2** (Xiph's 2024–25 model), **compiled from Xiph's BSD-3 C code** (`cc` in build.rs, model data compiled in, pinned by SHA-256), not `nnnoiseless` (its built-in weights are the 2017 v0.1 ones, trained partly on the commercial NTT speech database, and it can't load v0.2 models). The v0.2 training data (OpenSLR TTS sets CC BY-SA 4.0, Hi-Fi TTS CC BY 4.0, DEMAND CC BY 4.0, Xiph crowd noise CC0) is **accepted**. The sources of `foreground_noise` and the measured RIRs are undocumented: a question to Xiph is drafted (`docs/xiph-question.md`), sent only after the user approves it.
+- **Best: DPDFNet** (Ceva, 48 kHz, weights explicitly Apache-2.0 on the Hugging Face model card) is **allowed under the practical rule**; its training data (DNS4, MLS, MUSAN, FSD50K) is documented in THIRD-PARTY. In M3, **measure it against RNNoise** (SI-SDR improvement, reverberant fixtures, real-time factor on the dev i5) and ship it as "Best" **only if it is clearly better and fast enough**; otherwise v0.1 ships Fast only. Runs through `ort` 2.0.0-rc.10 (ONNX), mirrored in `models-v1` (pre-release).
+- **DeepFilterNet 3: rejected** (no licence for the weights; four open issues unanswered).
+- **Echo / reverb: own spectral late-reverb suppression** (Lebart 2001 / Habets style, Rust DSP, no training data) in M4, **shipped only if measurements show it helps**; otherwise the UI says "room echo reduction is coming". **No WPE** (NTT patent family, ~2029).
 
 ## Core pipeline
 
