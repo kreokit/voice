@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-21):** repo set up from the Clips foundations (`kreokit/voice`, CI green). Model research done (`docs/model-research.md`) and models decided by the user (see "Models"). Milestone 1 (Scaffold) in progress.
+**Status (2026-10-21):** milestone 1 (Scaffold) built and checked in the app on the dev Mac; waiting for the user's test. Models decided (see "Models"); the question to Xiph (`docs/xiph-question.md`) waits for the user's OK.
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -55,6 +55,19 @@ Copy (don't reinvent):
 - **DeepFilterNet 3: rejected** (no licence for the weights; four open issues unanswered).
 - **Echo / reverb: own spectral late-reverb suppression** (Lebart 2001 / Habets style, Rust DSP, no training data) in M4, **shipped only if measurements show it helps**; otherwise the UI says "room echo reduction is coming". **No WPE** (NTT patent family, ~2029).
 
+## Scaffold (milestone 1, built 2026-10-21)
+
+- **Copied:** from Clips the tokens, base styles, UI kit (`src/ui/`, with `logic.test.ts`), top bar, macOS overlay title bar, `ffmpeg.rs`, `probe.rs`, timeline maths (`src/lib/timeline.ts`) and styles, CI; from Cutout the drop zone, `recent.rs`, `relativeTime`. Plus `deny.toml`, `third_party.py`, `check_macos_binary.py`, issue templates.
+- **Probe** (`probe.rs`): duration, container, the first audio stream (codec, rate, channels, layout), `audio_start_ms`, and the picture of videos (cover art isn't one). Files without sound are refused.
+- **GPL guard** (`ffmpeg::gpl_only`): FFmpeg 9's GPL-only filters and GPL/non-free encoders; every module's FFmpeg command builder has a test that runs its arguments through it.
+- **Preview cache** (`preview.rs`, decided by the user: 16-bit): `<app cache>/preview/<FNV hash of the path>/` holds `audio.pcm` (48 kHz interleaved i16; mono stays mono, more channels become stereo), `peaks.bin` (one dB-scaled level per 10 ms, computed while decoding) and `meta.json` (written last; source size + mtime, so a changed file is decoded again). Sample 0 is the file's 0:00 (`aresample=async=1:first_pts=0`, Clips' late-audio rule); the sound ends where it ends (the late fixture's audio stops 0.13 s before its picture). Each decode works in its own `<id>.part-N` folder and is renamed into place when finished: React's StrictMode opens a file twice in dev, and a cancelled decode used to delete the running one's folder. Free space is checked first (1 GB spare). Caches of files that leave Recent are pruned (not the loaded one, not running `.part-N` folders younger than an hour). Cleaning (M2) decodes the original again in f32.
+- **Playback** (`player.rs`, decided by the user: native, cpal 0.18): a player thread owns the output stream; the cache is memory-mapped (`memmap2`, pinned `=0.9.11`); the callback renders with linear interpolation when the device isn't at 48 kHz (mono on every speaker, stereo on the first two, a mono device gets the average); seeks are handed to the callback through an atomic. The player is unloaded before its cache is rewritten. The UI polls `player_state` every 100 ms and draws the playhead per frame in between. M2's A/B adds a second source to `Shared`. `KREOKIT_AUDIO_TEST=1 cargo test plays_through -- --ignored` plays through the real output (not in CI: no sound device).
+- **Recent files** (`recent.rs`): `<app data>/recent.json`, 20 entries with length and audio/video, atomic writes; missing files show "Locate…" (`relocate_recent` keeps the position).
+- **UI:** Home (drop zone, recent list, several files at once: all go to Recent, the first opens, refused ones get a message); Editor (facts, "the picture is kept as it is" for videos, "Reading the sound" progress with Cancel, timeline with waveform, Play/Pause, Space, ←/→ 5 s). ⌘O opens files anywhere. `KREOKIT_DEV_OPEN=/path pnpm tauri dev` opens a file at startup (debug builds only).
+- **Fixtures:** `scripts/make-fixtures.sh` (macOS `say`): `fixtures/speech/hello-mono.wav`, `hello-stereo.m4a` (a different voice per channel, 44.1 kHz), `hello-late.mp4` (audio starts 0.48 s after the picture).
+- **Testing the app on the dev Mac:** synthetic clicks (Swift CGEvent helper in the scratchpad) only reach the window when it is frontmost: `osascript -e 'tell application "System Events" to set frontmost of process "voice" to true'` before each click; window points = screenshot pixels / 2.
+- **Watch at release (M6):** cpal pulls in objc2 CoreAudio/AVFAudio bindings: check weak imports with `check_macos_binary.py` on the release build for macOS 12. Linux links the system `libasound` (LGPL, dynamic; noted in THIRD-PARTY): check whether the AppImage bundles it and keep the notice. CI installs `libasound2-dev`.
+
 ## Core pipeline
 
 1. **Probe + decode** (ffmpeg) to 48 kHz f32, keeping the original channel layout and the video stream info.
@@ -79,7 +92,7 @@ Copy (don't reinvent):
 
 ## Milestones
 
-1. **Scaffold:** repo from Clips/Cutout foundations, dev port 1450, Home, probe + decode, waveform + playback.
+1. 🔶 **Scaffold** (built 2026-10-21, waiting for the user's test): repo from Clips/Cutout foundations, dev port 1450, Home, probe + decode, waveform + playback.
 2. **Fast clean:** licence check, RNNoise (or verified alternative), chunked processing with overlap, Strength, A/B compare, progress + cancel.
 3. **Best model:** licence + training-data check, conversion/mirror in `models-v1` (pre-release) if needed, Fast/Best choice, memory check, speed measurement on the dev machine.
 4. **Polish + loudness:** analysis (R128), high-pass, de-ess, compression, loudness presets, loudness-matched A/B, echo reduction only if a clean option exists.
