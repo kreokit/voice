@@ -1,5 +1,6 @@
 /** The native player (src-tauri/src/player.rs). */
 import { invoke } from "@tauri-apps/api/core";
+import type { Model } from "./clean";
 
 export interface PlayerState {
   playing: boolean;
@@ -20,7 +21,8 @@ export const playerPlay = () => invoke<PlayerState>("player_play");
 export const playerPause = () => invoke<PlayerState>("player_pause");
 export const playerSeek = (ms: number) => invoke<PlayerState>("player_seek", { ms });
 export const playerState = () => invoke<PlayerState>("player_state");
-export const playerLoadCleaned = (path: string) => invoke<PlayerState>("player_load_cleaned", { path });
+export const playerLoadCleaned = (path: string, model: Model) =>
+  invoke<PlayerState>("player_load_cleaned", { path, model });
 export const playerListen = (cleaned: boolean) => invoke<PlayerState>("player_listen", { cleaned });
 export const playerStrength = (strength: number) => invoke<PlayerState>("player_strength", { strength });
 

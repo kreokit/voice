@@ -1,9 +1,10 @@
 mod clean;
+mod cpu;
 mod disk;
-#[cfg(test)]
 mod dpdfnet;
 mod ffmpeg;
 mod metrics;
+mod models;
 mod player;
 mod preview;
 mod probe;
@@ -31,6 +32,11 @@ async fn blocking<T: Send + 'static>(
 /// Where `recent.json` lives.
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+/// Where the Best model is downloaded.
+fn models_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("models"))
 }
 
 /// Where the preview caches live (one folder per file, see `preview.rs`).
@@ -211,20 +217,71 @@ async fn waveform(app: AppHandle, path: PathBuf) -> Result<tauri::ipc::Response,
 #[derive(Default)]
 struct CleanJob(Mutex<Option<Arc<AtomicBool>>>);
 
-/// Whether `path` already has a cleaned sound (from an earlier session).
+/// The Best model: its size, whether it is downloaded, and whether the CPU can run it.
 #[tauri::command]
-async fn clean_status(app: AppHandle, path: PathBuf) -> Result<Option<clean::CleanMeta>, String> {
-    let dir = preview::dir_for(&preview_root(&app)?, &path);
+async fn best_model(app: AppHandle) -> Result<models::BestModel, String> {
+    let dir = models_dir(&app)?;
+    blocking(move || Ok(models::best_model(&dir))).await
+}
+
+/// The running Best model download's cancel flag.
+#[derive(Default)]
+struct ModelJob(Mutex<Option<Arc<AtomicBool>>>);
+
+/// Downloads the Best model once, with `model-progress` events.
+#[tauri::command]
+async fn download_best_model(app: AppHandle) -> Result<(), String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Some(previous) = app
+        .state::<ModelJob>()
+        .0
+        .lock()
+        .unwrap()
+        .replace(cancel.clone())
+    {
+        previous.store(true, Ordering::SeqCst);
+    }
+    let dir = models_dir(&app)?;
+    let events = app.clone();
     blocking(move || {
-        Ok(preview::cached(&dir, &path).and_then(|preview| clean::cached(&dir, &preview)))
+        models::download_best(&dir, &cancel, |p| {
+            let _ = events.emit("model-progress", p);
+        })
+        .map(|_| ())
     })
     .await
 }
 
-/// Removes the noise of `path` (its preview must be ready), with `clean-progress` events.
-/// When `path` is the file being played, its cleaned sound is loaded into the player.
 #[tauri::command]
-async fn clean_file(app: AppHandle, path: PathBuf) -> Result<clean::CleanMeta, String> {
+fn cancel_model_download(app: AppHandle) {
+    if let Some(job) = app.state::<ModelJob>().0.lock().unwrap().take() {
+        job.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Whether `path` already has a sound cleaned with `model` (from an earlier session).
+#[tauri::command]
+async fn clean_status(
+    app: AppHandle,
+    path: PathBuf,
+    model: clean::Model,
+) -> Result<Option<clean::CleanMeta>, String> {
+    let dir = preview::dir_for(&preview_root(&app)?, &path);
+    blocking(move || {
+        Ok(preview::cached(&dir, &path).and_then(|preview| clean::cached(&dir, &preview, model)))
+    })
+    .await
+}
+
+/// Removes the noise of `path` with `model` (its preview must be ready), with
+/// `clean-progress` events. When `path` is the file being played, the result is loaded into
+/// the player.
+#[tauri::command]
+async fn clean_file(
+    app: AppHandle,
+    path: PathBuf,
+    model: clean::Model,
+) -> Result<clean::CleanMeta, String> {
     let cancel = Arc::new(AtomicBool::new(false));
     if let Some(previous) = app
         .state::<CleanJob>()
@@ -239,14 +296,15 @@ async fn clean_file(app: AppHandle, path: PathBuf) -> Result<clean::CleanMeta, S
     let player = app.state::<player::Player>();
     let playing_this = player.loaded().as_ref() == Some(&dir);
     if playing_this {
-        // Its cleaned file is about to be replaced: release the old mapping.
+        // Its cleaned file may be replaced: release the old mapping.
         player.set_cleaned(None);
     }
     let events = app.clone();
+    let models = models_dir(&app)?;
     let (job_dir, job_path) = (dir.clone(), path.clone());
     let meta = blocking(move || {
         let preview = preview::cached(&job_dir, &job_path).ok_or("the preview isn't ready")?;
-        let meta = clean::prepare(&job_dir, &preview, &cancel, |fraction| {
+        let meta = clean::prepare(&job_dir, &preview, model, &models, &cancel, |fraction| {
             let _ = events.emit(
                 "clean-progress",
                 PreviewProgress {
@@ -260,10 +318,8 @@ async fn clean_file(app: AppHandle, path: PathBuf) -> Result<clean::CleanMeta, S
     .await;
     let (preview, meta) = meta?;
     if playing_this && player.loaded().as_ref() == Some(&dir) {
-        player.set_cleaned(Some(player::Pcm::open(
-            &clean::audio_path(&dir),
-            preview.channels,
-        )?));
+        let pcm = player::Pcm::open(&clean::audio_path(&dir, model), preview.channels)?;
+        player.set_cleaned(Some(pcm));
     }
     Ok(meta)
 }
@@ -275,24 +331,38 @@ fn cancel_clean(app: AppHandle) {
     }
 }
 
-/// The cleaned sound's waveform (like `waveform`).
+/// The sound cleaned with `model`: its waveform (like `waveform`).
 #[tauri::command]
-async fn cleaned_waveform(app: AppHandle, path: PathBuf) -> Result<tauri::ipc::Response, String> {
+async fn cleaned_waveform(
+    app: AppHandle,
+    path: PathBuf,
+    model: clean::Model,
+) -> Result<tauri::ipc::Response, String> {
     let dir = preview::dir_for(&preview_root(&app)?, &path);
-    blocking(move || clean::peaks(&dir).map(tauri::ipc::Response::new)).await
+    blocking(move || clean::peaks(&dir, model).map(tauri::ipc::Response::new)).await
 }
 
-/// Loads `path`'s cleaned sound (if there is one) next to its preview in the player.
+/// Loads `path`'s sound cleaned with `model` next to its preview in the player (none when
+/// there isn't one yet).
 #[tauri::command]
-async fn player_load_cleaned(app: AppHandle, path: PathBuf) -> Result<player::PlayerState, String> {
+async fn player_load_cleaned(
+    app: AppHandle,
+    path: PathBuf,
+    model: clean::Model,
+) -> Result<player::PlayerState, String> {
     let dir = preview::dir_for(&preview_root(&app)?, &path);
     let player = app.state::<player::Player>();
     if player.loaded().as_ref() == Some(&dir) {
-        let found =
-            preview::cached(&dir, &path).and_then(|p| clean::cached(&dir, &p).map(|_| p.channels));
-        if let Some(channels) = found {
-            player.set_cleaned(Some(player::Pcm::open(&clean::audio_path(&dir), channels)?));
-        }
+        let found = preview::cached(&dir, &path)
+            .and_then(|p| clean::cached(&dir, &p, model).map(|_| p.channels));
+        let pcm = match found {
+            Some(channels) => Some(player::Pcm::open(
+                &clean::audio_path(&dir, model),
+                channels,
+            )?),
+            None => None,
+        };
+        player.set_cleaned(pcm);
     }
     Ok(player.state())
 }
@@ -407,6 +477,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(PreviewJob::default())
         .manage(CleanJob::default())
+        .manage(ModelJob::default())
         .manage(player::Player::default())
         .invoke_handler(tauri::generate_handler![
             probe_media,
@@ -417,6 +488,9 @@ pub fn run() {
             prepare_preview,
             cancel_preview,
             waveform,
+            best_model,
+            download_best_model,
+            cancel_model_download,
             clean_status,
             clean_file,
             cancel_clean,
@@ -443,6 +517,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 cancel_preview(app.clone());
                 cancel_clean(app.clone());
+                cancel_model_download(app.clone());
                 app.state::<player::Player>().unload();
             }
         });

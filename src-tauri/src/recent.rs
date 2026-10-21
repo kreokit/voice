@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::clean::Model;
+
 /// How many files the Home screen keeps (their preview caches are kept too).
 pub const MAX_RECENT: usize = 20;
 
@@ -24,17 +26,33 @@ pub struct RecentFile {
     pub settings: FileSettings,
 }
 
-/// What the editor remembers per file.
+/// What the editor remembers per file: the model, and a Strength for each model (their
+/// measured defaults differ).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FileSettings {
-    /// Noise removal strength, 0–1.
-    pub strength: f32,
+    #[serde(default)]
+    pub model: Model,
+    /// Noise removal strength with Fast, 0–1 (`strength` before Best existed).
+    #[serde(default = "fast_default", alias = "strength")]
+    pub fast_strength: f32,
+    #[serde(default = "best_default")]
+    pub best_strength: f32,
+}
+
+fn fast_default() -> f32 {
+    Model::Fast.default_strength()
+}
+
+fn best_default() -> f32 {
+    Model::Best.default_strength()
 }
 
 impl Default for FileSettings {
     fn default() -> Self {
         Self {
-            strength: crate::clean::DEFAULT_STRENGTH,
+            model: Model::Fast,
+            fast_strength: fast_default(),
+            best_strength: best_default(),
         }
     }
 }
@@ -223,21 +241,33 @@ mod tests {
     fn keeps_settings_per_file() {
         let dir = temp_dir("settings");
         touch(&dir, vec![file("/a.wav", 1)]).unwrap();
-        assert_eq!(
-            settings(&dir, "/a.wav").strength,
-            crate::clean::DEFAULT_STRENGTH
-        );
-        save_settings(&dir, "/a.wav", FileSettings { strength: 0.5 }).unwrap();
-        // Opened again, and moved: still 0.5. An older list without settings reads defaults.
+        assert_eq!(settings(&dir, "/a.wav"), FileSettings::default());
+        assert_eq!(settings(&dir, "/a.wav").fast_strength, 0.85);
+        assert_eq!(settings(&dir, "/a.wav").best_strength, 0.95);
+        let chosen = FileSettings {
+            model: Model::Best,
+            fast_strength: 0.5,
+            best_strength: 0.9,
+        };
+        save_settings(&dir, "/a.wav", chosen).unwrap();
+        // Opened again, and moved: kept.
         touch(&dir, vec![file("/a.wav", 2)]).unwrap();
         relocate(&dir, "/a.wav", file("/moved/a.wav", 3)).unwrap();
-        assert_eq!(settings(&dir, "/moved/a.wav").strength, 0.5);
+        assert_eq!(settings(&dir, "/moved/a.wav"), chosen);
+        // Lists from before: no settings, or milestone 2's single Fast strength.
         fs::write(
             list_file(&dir),
-            r#"[{"path":"/old.wav","opened_at":1,"duration_ms":5,"is_video":false}]"#,
+            r#"[{"path":"/old.wav","opened_at":1,"duration_ms":5,"is_video":false},
+                {"path":"/m2.wav","opened_at":1,"duration_ms":5,"is_video":false,
+                 "settings":{"strength":0.6}}]"#,
         )
         .unwrap();
         assert_eq!(settings(&dir, "/old.wav"), FileSettings::default());
+        let m2 = settings(&dir, "/m2.wav");
+        assert_eq!(
+            (m2.model, m2.fast_strength, m2.best_strength),
+            (Model::Fast, 0.6, 0.95)
+        );
     }
 
     #[test]
