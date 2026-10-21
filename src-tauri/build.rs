@@ -18,6 +18,7 @@ fn build_rnnoise() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("rnnoise");
     println!("cargo:rerun-if-changed=rnnoise");
     println!("cargo:rerun-if-env-changed=KREOKIT_RNNOISE_MODEL");
+    println!("cargo:rerun-if-env-changed=KREOKIT_RNNOISE_XIPH_URL");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let model_dir = rnnoise_model(&root, &out);
 
@@ -112,19 +113,7 @@ fn rnnoise_model(root: &Path, out: &Path) -> PathBuf {
         None => {
             let path = out.join(&name);
             if !path.is_file() {
-                let url = format!("https://media.xiph.org/rnnoise/models/{name}");
-                let part = out.join(format!("{name}.part"));
-                let status = Command::new("curl")
-                    .args(["-fsSL", "--retry", "3", "-o"])
-                    .arg(&part)
-                    .arg(&url)
-                    .status()
-                    .expect("curl is needed to download the RNNoise model");
-                assert!(
-                    status.success(),
-                    "downloading {url} failed; set KREOKIT_RNNOISE_MODEL to a local copy"
-                );
-                fs::rename(&part, &path).unwrap();
+                download_model(&name, &path);
             }
             path
         }
@@ -152,4 +141,37 @@ fn rnnoise_model(root: &Path, out: &Path) -> PathBuf {
     assert!(status.success(), "unpacking {} failed", tarball.display());
     fs::write(&stamp, &hash).unwrap();
     dir
+}
+
+/// Downloads the model archive `name` to `path`: from Xiph, or from our own mirror (the
+/// `models-v1` pre-release on kreokit/voice, the same file unchanged) if Xiph's server
+/// fails. Either copy is checked against the SHA-256 afterwards.
+/// `KREOKIT_RNNOISE_XIPH_URL` replaces Xiph's base URL (to test the fallback).
+fn download_model(name: &str, path: &Path) {
+    let xiph = env::var("KREOKIT_RNNOISE_XIPH_URL")
+        .unwrap_or_else(|_| "https://media.xiph.org/rnnoise/models".into());
+    let sources = [
+        format!("{xiph}/{name}"),
+        format!("https://github.com/kreokit/voice/releases/download/models-v1/{name}"),
+    ];
+    let part = path.with_extension("part");
+    for url in &sources {
+        let ok = Command::new("curl")
+            .args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "-o"])
+            .arg(&part)
+            .arg(url)
+            .status()
+            .expect("curl is needed to download the RNNoise model")
+            .success();
+        if ok {
+            fs::rename(&part, path).unwrap();
+            return;
+        }
+        println!("cargo:warning=downloading {url} failed; trying the next source");
+    }
+    let _ = fs::remove_file(&part);
+    panic!(
+        "downloading the RNNoise model failed from {}; set KREOKIT_RNNOISE_MODEL to a local copy",
+        sources.join(" and ")
+    );
 }

@@ -15,7 +15,8 @@ publisher are used, with no non-commercial terms, and their training data is lis
   (`src-tauri/rnnoise/COPYING`). Library sources from <https://gitlab.xiph.org/xiph/rnnoise>
   at commit `70f1d256acd4b34a572f999a05c87bf00b67730d`; model
   `rnnoise_data-0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37.tar.gz`
-  from <https://media.xiph.org/rnnoise/models/> (2025-01-30), checked against that SHA-256.
+  from <https://media.xiph.org/rnnoise/models/> (2025-01-30; mirrored unchanged in this
+  project's `models-v1` release for the build), checked against that SHA-256.
 - **Training data** (Xiph: "trained using only the publicly available datasets listed"; the
   repository's `datasets.txt` and README):
   - Speech: Google's crowd-sourced TTS corpora on OpenSLR (resources 30, 32, 37, 41–44,
