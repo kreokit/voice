@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-import { conflictText, formatLeft, speedFor, timeLeft, withExtension } from "./exporting";
+import { conflictText, formatHint, formatLeft, speedFor, timeLeft, withExtension } from "./exporting";
 
 describe("export", () => {
   it("changes the extension for audio formats only", () => {
@@ -34,5 +34,13 @@ describe("export", () => {
     expect(conflictText(["a", "b", "c", "d"])).toBe(
       "4 of the files already exist in that folder: a, b, c and 1 more. Keep both saves the new ones as “name-2”.",
     );
+  });
+
+  it("says audio formats from a video have no picture", () => {
+    const video = { is_video: true, mp3: true };
+    expect(formatHint("video", video)).toBeUndefined();
+    for (const f of ["wav", "flac", "m4a", "mp3"] as const) expect(formatHint(f, video)).toBe("Audio only, no picture");
+    expect(formatHint("wav", { is_video: false, mp3: true })).toBeUndefined();
+    expect(formatHint("mp3", { is_video: true, mp3: false })).toBe("not available");
   });
 });

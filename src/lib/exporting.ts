@@ -147,3 +147,10 @@ export function conflictText(names: string[]): string {
   const keep = names.length === 1 ? "the new one" : "the new ones";
   return `${which} in that folder: ${listed}. Keep both saves ${keep} as “name-2”.`;
 }
+
+/** The note next to a format: audio formats from a video drop the picture. */
+export function formatHint(format: Format, options: { is_video: boolean; mp3: boolean } | null): string | undefined {
+  if (format === "mp3" && options && !options.mp3) return "not available";
+  if (format !== "video" && options?.is_video) return "Audio only, no picture";
+  return undefined;
+}

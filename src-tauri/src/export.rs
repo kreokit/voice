@@ -34,6 +34,8 @@ pub const NOTHING_TO_DO: &str = "nothing would change";
 /// Every temporary file Voice writes ends with this, so leftovers of a crash can be
 /// recognised and removed (and nothing else).
 pub const TEMP_SUFFIX: &str = ".kreokit-voice-tmp";
+const UNREADABLE: &str = "The sound of this file couldn't be read. Check that it still plays in other apps; if it was moved or renamed, open it again from its new place.";
+const UNREADABLE_OUTPUT: &str = "The written file couldn't be read back for the check, so it wasn't saved. Try again, or choose another folder.";
 /// The promise of the loudness presets.
 pub const LOUDNESS_TOLERANCE_LU: f64 = 0.5;
 pub const MAX_TRUE_PEAK_DBTP: f64 = -1.0;
@@ -181,6 +183,13 @@ impl Drop for TempFile {
     }
 }
 
+/// FFmpeg is part of the app: when it can't start, the installation is broken.
+fn not_started(e: std::io::Error) -> String {
+    format!(
+        "KreoKit's FFmpeg couldn't be started ({e}). Reinstall KreoKit Voice; if that doesn't help, please use Report a problem."
+    )
+}
+
 /// Kills a running FFmpeg when dropped.
 struct Running(Child);
 
@@ -214,7 +223,9 @@ pub fn export(
         return Err(format!("{} already exists", job.destination.display()));
     }
     if job.destination == job.source {
-        return Err("the export would replace the original".into());
+        return Err(
+            "The export would overwrite the original file. Choose another name or folder.".into(),
+        );
     }
     let started = std::time::Instant::now();
     let cleaned = job.cleaned.is_some();
@@ -227,7 +238,7 @@ pub fn export(
     let channels = preview::output_channels(job.info.audio.channels) as usize;
 
     // 1. The sound as the editor plays it, before Polish, in a temporary f32 file.
-    fs::create_dir_all(work_dir).map_err(|e| format!("cannot create the work folder: {e}"))?;
+    fs::create_dir_all(work_dir).map_err(|e| format!("KreoKit couldn't create its work folder ({e}). Check that the disk isn't full, then try again."))?;
     let seconds = job.info.duration_ms as f64 / 1000.0;
     let f32_bytes = (seconds * SAMPLE_RATE as f64) as u64 * channels as u64 * 4;
     disk::ensure_free(work_dir, f32_bytes, preview::DISK_MARGIN)?;
@@ -250,7 +261,7 @@ pub fn export(
     let dest_dir = job
         .destination
         .parent()
-        .ok_or("the destination has no folder")?;
+        .ok_or("Choose a folder to save into.")?;
     disk::ensure_free(
         dest_dir,
         job.format.bytes_per_second(channels as u16) * seconds as u64 + video_bytes(job),
@@ -267,7 +278,7 @@ pub fn export(
         })?;
         report(Stage::Checking, 0.0);
         let found = measure_file(&out.0, channels, cancel)?;
-        if let Some(video) = &job.info.video {
+        if let Some(video) = job.info.video.as_ref().filter(|_| keeps_picture(job)) {
             check_video(&job.source, &out.0, video.fps)?;
         }
         report(Stage::Checking, 0.8);
@@ -308,12 +319,20 @@ pub fn export(
         // The encoder pushed the peak over: lower the ceiling by the overshoot.
         ceiling -= (found.true_peak_db - MAX_TRUE_PEAK_DBTP) as f32 + 0.1;
     }
-    Err(format!("the check failed: {last_error}"))
+    Err(format!(
+        "The written file didn't pass the check, so it wasn't saved ({last_error}). Try again; if it happens again, please use Report a problem."
+    ))
+}
+
+/// True when the export keeps the picture (a video exported as a video). A video exported
+/// as WAV, FLAC, M4A or MP3 is the cleaned sound only, without a picture to check.
+pub(crate) fn keeps_picture(job: &Job) -> bool {
+    job.format == Format::Video && job.info.video.is_some()
 }
 
 /// Video bytes to copy (for the free-space check).
 fn video_bytes(job: &Job) -> u64 {
-    if job.format == Format::Video {
+    if keeps_picture(job) {
         fs::metadata(&job.source).map_or(0, |m| m.len())
     } else {
         0
@@ -324,14 +343,17 @@ fn video_bytes(job: &Job) -> u64 {
 fn finish(temp: &Path, destination: &Path, replace: bool) -> Result<(), String> {
     if destination.exists() {
         if !replace {
-            return Err(format!("{} appeared meanwhile", destination.display()));
+            return Err(format!(
+                "{} was created by something else during the export. Export again and choose Replace or Keep both.",
+                destination.display()
+            ));
         }
         // Windows can't rename over a file.
         if cfg!(windows) {
-            fs::remove_file(destination).map_err(|e| format!("cannot replace the file: {e}"))?;
+            fs::remove_file(destination).map_err(|e| format!("The existing file couldn't be replaced ({e}). Close it in other apps, or choose Keep both."))?;
         }
     }
-    fs::rename(temp, destination).map_err(|e| format!("cannot save the file: {e}"))
+    fs::rename(temp, destination).map_err(|e| format!("The file couldn't be saved in that folder ({e}). Check that you can write there, or choose another folder."))
 }
 
 /// Decodes the original in f32 and writes it, cleaned and blended when the file was
@@ -352,7 +374,7 @@ fn write_sound(
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("failed to run {}: {e}", ffmpeg.display()))?,
+            .map_err(not_started)?,
     );
     let mut input = BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
     let mut output = BufWriter::with_capacity(
@@ -433,7 +455,7 @@ fn write_sound(
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(format!("cannot read the sound: {e}")),
+            Err(_) => return Err(UNREADABLE.into()),
         };
         let filled = pending + n;
         let whole = filled / frame_bytes * frame_bytes;
@@ -467,7 +489,7 @@ fn write_sound(
     }
     let status = child.0.wait().map_err(|e| e.to_string())?;
     if !status.success() {
-        return Err("ffmpeg could not read the sound".into());
+        return Err(UNREADABLE.into());
     }
     if let Some(c) = cleaner.take() {
         c.finish(&mut cleaned)?;
@@ -483,10 +505,10 @@ fn write_sound(
         .flush()
         .map_err(|e| format!("cannot write the work file: {e}"))?;
     if frames == 0 {
-        return Err("this file's sound is empty".into());
+        return Err("This file has no sound to export. Check it in another player; if it has sound there, please use Report a problem.".into());
     }
     if written as u64 != frames * channels as u64 {
-        return Err("the cleaned sound came out the wrong length".into());
+        return Err("Something went wrong while cleaning (the cleaned sound has the wrong length). Try again; if it keeps happening, please use Report a problem.".into());
     }
     progress(1.0);
     Ok(frames)
@@ -631,7 +653,7 @@ pub(crate) fn encode_args(job: &Job, channels: usize, out: &Path, aac_at: bool) 
         "pipe:0",
     ]
     .map(String::from);
-    if job.format == Format::Video {
+    if keeps_picture(job) {
         a.push("-i".into());
         a.push(job.source.to_string_lossy().into_owned());
         a.extend(raw);
@@ -671,10 +693,12 @@ fn write_output(
 ) -> Result<(), String> {
     match job.format {
         Format::Mp3 if !has_encoder("libmp3lame") => {
-            return Err("MP3 isn't available in this FFmpeg".into());
+            return Err(
+                "MP3 isn't available in this build. Choose WAV, FLAC or M4A instead.".into(),
+            );
         }
         Format::Video if extension(&job.source) == "webm" && !has_encoder("libopus") => {
-            return Err("Opus (for WebM) isn't available in this FFmpeg".into());
+            return Err("This build can't write WebM sound (Opus). Export the sound as WAV, FLAC, M4A or MP3 instead.".into());
         }
         _ => {}
     }
@@ -687,7 +711,7 @@ fn write_output(
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("failed to run {}: {e}", ffmpeg.display()))?,
+            .map_err(not_started)?,
     );
     let mut stderr = child.0.stderr.take().unwrap();
     let errors = std::thread::spawn(move || {
@@ -734,7 +758,7 @@ fn write_output(
     let errors = errors.join().unwrap_or_default();
     if !status.success() {
         return Err(format!(
-            "ffmpeg could not write the file: {}",
+            "The file couldn't be written ({}). Check that there's free space in that folder, or try another format.",
             errors.trim()
         ));
     }
@@ -773,7 +797,7 @@ fn measure_file(path: &Path, channels: usize, cancel: &AtomicBool) -> Result<Fou
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("failed to run {}: {e}", ffmpeg.display()))?,
+            .map_err(not_started)?,
     );
     let mut input = BufReader::with_capacity(1 << 20, child.0.stdout.take().unwrap());
     let mut meter = ebur128::EbuR128::new(
@@ -792,7 +816,7 @@ fn measure_file(path: &Path, channels: usize, cancel: &AtomicBool) -> Result<Fou
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(format!("cannot read the written file: {e}")),
+            Err(_) => return Err(UNREADABLE_OUTPUT.into()),
         };
         let filled = pending + n;
         let whole = filled / frame_bytes * frame_bytes;
@@ -806,7 +830,7 @@ fn measure_file(path: &Path, channels: usize, cancel: &AtomicBool) -> Result<Fou
         pending = filled - whole;
     }
     if !child.0.wait().map_err(|e| e.to_string())?.success() {
-        return Err("the written file can't be read back".into());
+        return Err(UNREADABLE_OUTPUT.into());
     }
     let peak = (0..channels as u32)
         .filter_map(|c| meter.true_peak(c).ok())
@@ -835,9 +859,10 @@ fn check_video(original: &Path, output: &Path, fps: f64) -> Result<(), String> {
             .arg(path)
             .args(["-map", "0:v:0", "-c", "copy", "-f", "framemd5", "-"])
             .output()
-            .map_err(|e| format!("failed to run {}: {e}", ffmpeg.display()))?;
+            .map_err(not_started)?;
         if !out.status.success() {
-            return Err("cannot read the video stream".into());
+            return Err(
+                "The picture couldn't be read for the check, so nothing was saved. Try again; to keep only the sound, choose WAV, FLAC, M4A or MP3.".into());
         }
         // Keep the checksum column (the last), not the timestamps (a remux may shift them).
         Ok(String::from_utf8_lossy(&out.stdout)
@@ -849,7 +874,7 @@ fn check_video(original: &Path, output: &Path, fps: f64) -> Result<(), String> {
     let (a, b) = (sums(original)?, sums(output)?);
     if a != b {
         return Err(format!(
-            "the picture changed ({} frames in the original, {} in the export)",
+            "The picture would have changed ({} frames in the original, {} in the export), so nothing was saved. Please use Report a problem; meanwhile you can export the sound only (WAV, FLAC, M4A or MP3).",
             a.len(),
             b.len()
         ));
@@ -857,7 +882,9 @@ fn check_video(original: &Path, output: &Path, fps: f64) -> Result<(), String> {
     let frame_ms = (1000.0 / fps.max(1.0)).ceil() as u64;
     let start = crate::probe::probe(output)?.audio_start_ms;
     if start > frame_ms {
-        return Err(format!("the sound starts {start} ms after the picture"));
+        return Err(format!(
+            "The new sound would start {start} ms after the picture, so nothing was saved. Please use Report a problem; meanwhile you can export the sound only (WAV, FLAC, M4A or MP3)."
+        ));
     }
     Ok(())
 }
@@ -1109,6 +1136,46 @@ mod tests {
         assert!(audio_codec_args(Format::Video, "webm", false).contains(&"libopus".to_string()));
     }
 
+    /// A video exported as an audio format is the sound only: the original isn't an input
+    /// (no picture, subtitles or other tracks), and there's no picture to check.
+    #[test]
+    fn audio_formats_from_a_video_drop_the_picture() {
+        let info = probe::parse_ffprobe_json(
+            r#"{"streams":[{"codec_type":"video","width":1280,"height":720,"avg_frame_rate":"30/1"},
+                           {"codec_type":"audio","sample_rate":"44100","channels":2}],
+                "format":{"duration":"357"}}"#,
+        )
+        .unwrap();
+        for source in ["/a/x.mp4", "/a/x.mov", "/a/x.mkv", "/a/x.webm"] {
+            for format in [Format::Wav, Format::Flac, Format::M4a, Format::Mp3] {
+                let j = job(
+                    Path::new(source),
+                    &info,
+                    format,
+                    Path::new("/o/y"),
+                    Path::new("/p"),
+                );
+                assert!(!keeps_picture(&j));
+                let args = encode_args(&j, 2, Path::new("/o/tmp"), false);
+                assert!(!args.iter().any(|a| a == source), "{args:?}");
+                assert!(
+                    !args.iter().any(|a| a.starts_with("0:v") || a == "copy"),
+                    "{args:?}"
+                );
+                assert_eq!(args.iter().filter(|a| *a == "-i").count(), 1, "{args:?}");
+                assert_eq!(muxer(format, "mp4"), muxer(format, "webm"));
+            }
+            let j = job(
+                Path::new(source),
+                &info,
+                Format::Video,
+                Path::new("/o/y"),
+                Path::new("/p"),
+            );
+            assert!(keeps_picture(&j));
+        }
+    }
+
     /// Prepares a copy of a fixture (preview, and Fast cleaning when asked) in `dir`.
     fn prepared(name: &str, dir: &Path, clean_it: bool) -> (PathBuf, MediaInfo, PathBuf) {
         let source = dir.join(name);
@@ -1291,32 +1358,111 @@ mod tests {
         assert!(out.audio_start_ms <= 40, "{}", out.audio_start_ms);
     }
 
+    /// A sample video in `dir`: a test picture and a 300 Hz tone (AAC 44.1 kHz stereo unless
+    /// `extra` says otherwise). Made by the system's FFmpeg (on PATH): it needs video
+    /// encoders, which Voice's own build doesn't have (it never encodes a picture).
+    fn sample_video(dir: &Path, name: &str, size: &str, extra: &[&str]) -> PathBuf {
+        let path = dir.join(name);
+        let status = Command::new("ffmpeg")
+            .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi"])
+            .arg("-i")
+            .arg(format!("testsrc=size={size}:rate=25:duration=3"))
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=300:sample_rate=44100:duration=3",
+            ])
+            .args(extra)
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{name}");
+        path
+    }
+
+    /// Every audio format from MP4, MOV, MKV and WebM sources: the sound only, no picture,
+    /// checked like any audio export (the bug: MP3 from an MP4 failed on the picture check).
+    #[test]
+    #[ignore]
+    fn audio_formats_from_videos() {
+        let dir = temp_dir("audio-from-video");
+        let stereo = ["-ac", "2"];
+        let videos = [
+            ("talk.mp4", "1280x720", ["-c:v", "mpeg4", "-c:a", "aac"]),
+            ("phone.mov", "320x240", ["-c:v", "mpeg4", "-c:a", "aac"]),
+            ("stream.mkv", "320x240", ["-c:v", "mpeg4", "-c:a", "aac"]),
+            ("web.webm", "320x240", ["-c:v", "libvpx", "-c:a", "libopus"]),
+        ];
+        for (name, size, codecs) in videos {
+            let extra: Vec<&str> = ["-map", "0:v", "-map", "1:a"]
+                .into_iter()
+                .chain(codecs)
+                .chain(stereo)
+                .collect();
+            let source = sample_video(&dir, name, size, &extra);
+            let info = probe::probe(&source).unwrap();
+            assert!(info.video.is_some(), "{name}");
+            let preview_dir = dir.join(format!("preview-{name}"));
+            preview::prepare(
+                &preview_dir,
+                &source,
+                info.audio.channels,
+                info.duration_ms,
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .unwrap();
+            for (format, codec) in [
+                (Format::Wav, "pcm_s24le"),
+                (Format::Flac, "flac"),
+                (Format::M4a, "aac"),
+                (Format::Mp3, "mp3"),
+            ] {
+                if format == Format::Mp3 && !mp3_available() {
+                    panic!("MP3 isn't available in this FFmpeg");
+                }
+                let dest = destination(&dir, &source, format);
+                let mut j = job(&source, &info, format, &dest, &preview_dir);
+                j.cleaned = Some(Model::Fast);
+                let done = export(
+                    &j,
+                    &dir.join("work"),
+                    Path::new(""),
+                    &AtomicBool::new(false),
+                    &mut |_| {},
+                )
+                .unwrap_or_else(|e| panic!("{name} as {format:?}: {e}"));
+                assert!(
+                    (done.lufs.unwrap() + 14.0).abs() <= 0.5,
+                    "{name} {format:?}"
+                );
+                assert!(done.true_peak_db <= -1.0, "{name} {format:?}");
+                let out = probe::probe(&dest).unwrap();
+                assert!(out.video.is_none(), "no picture: {name} as {format:?}");
+                assert_eq!(out.audio_streams, 1, "{name} {format:?}");
+                let a = ffprobe_audio(&dest);
+                assert_eq!(a["codec_name"], codec, "{name} {format:?}");
+                assert_eq!(a["sample_rate"], "48000");
+                assert_eq!(a["channels"], 2);
+                assert!(
+                    out.duration_ms.abs_diff(info.duration_ms) <= 100,
+                    "{name} {format:?}: {} vs {} ms",
+                    out.duration_ms,
+                    info.duration_ms
+                );
+                fs::remove_file(&dest).unwrap();
+            }
+        }
+        assert_eq!(leftovers(&dir) + leftovers(&dir.join("work")), 0);
+    }
+
     /// Generated videos in other containers: MKV with two audio tracks, MOV rotated, WebM.
     #[test]
     #[ignore]
     fn remuxes_mkv_mov_and_webm() {
         let dir = temp_dir("containers");
-        // The sample videos come from the system's FFmpeg (on PATH): they need video
-        // encoders, which Voice's own build doesn't have (it never encodes a picture).
-        let ff = PathBuf::from("ffmpeg");
-        let make = |name: &str, extra: &[&str]| {
-            let path = dir.join(name);
-            let status = Command::new(&ff)
-                .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi"])
-                .args(["-i", "testsrc=size=320x240:rate=25:duration=3"])
-                .args([
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "sine=frequency=300:sample_rate=44100:duration=3",
-                ])
-                .args(extra)
-                .arg(&path)
-                .status()
-                .unwrap();
-            assert!(status.success(), "{name}");
-            path
-        };
+        let make = |name: &str, extra: &[&str]| sample_video(&dir, name, "320x240", extra);
         let videos = [
             make(
                 "two-tracks.mkv",

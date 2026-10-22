@@ -7,7 +7,7 @@ use std::path::Path;
 pub fn ensure_free(dir: &Path, needed: u64, margin: u64) -> Result<(), String> {
     match free_bytes(dir) {
         Some(free) if free < needed.saturating_add(margin) => Err(format!(
-            "Not enough free disk space: this needs about {} and {} is free (keeping {} spare).",
+            "Not enough free disk space: this needs about {} and {} is free (keeping {} spare). Free up some space, then try again.",
             gigabytes(needed),
             gigabytes(free),
             gigabytes(margin)

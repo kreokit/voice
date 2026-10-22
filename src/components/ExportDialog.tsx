@@ -14,6 +14,7 @@ import {
   devExportFolder,
   exportFile,
   exportOptions,
+  formatHint,
   freeName,
   revealExport,
   withExtension,
@@ -120,8 +121,8 @@ export function ExportDialog({ path, onClose }: { path: string; onClose: () => v
             onChange={chooseFormat}
             options={formats.map((f) => ({
               value: f,
-              label: f === "video" ? FORMAT_LABELS.video : options?.is_video ? `Sound only: ${FORMAT_LABELS[f]}` : FORMAT_LABELS[f],
-              hint: f === "mp3" && options && !options.mp3 ? "not available" : undefined,
+              label: FORMAT_LABELS[f],
+              hint: formatHint(f, options),
             }))}
           />
         </Field>
@@ -135,6 +136,9 @@ export function ExportDialog({ path, onClose }: { path: string; onClose: () => v
             </Button>
           </div>
         </Field>
+        {options?.is_video && format !== "video" && (
+          <p className="dialog-hint">Audio only, no picture: only the video's sound is saved, as you hear it.</p>
+        )}
         <p className="dialog-hint">
           Exactly what you hear as {options?.cleaned ? "Cleaned" : "Polished"}: the loudness is measured over the whole
           file, and the written file is checked before it's saved.

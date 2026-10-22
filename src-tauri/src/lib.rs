@@ -587,7 +587,9 @@ impl ExportJob {
     fn start(&self) -> Result<Arc<AtomicBool>, String> {
         let mut slot = self.0.lock().unwrap();
         if slot.as_ref().is_some_and(|c| !c.load(Ordering::SeqCst)) {
-            return Err("an export is already running".into());
+            return Err(
+                "An export is already running. Wait for it to finish, or stop it first.".into(),
+            );
         }
         let cancel = Arc::new(AtomicBool::new(false));
         *slot = Some(cancel.clone());
@@ -648,7 +650,9 @@ async fn export_options(app: AppHandle, path: PathBuf) -> Result<ExportOptions, 
     blocking(move || {
         let info = probe::probe(&path)?;
         let format = export::Format::default_for(&path, &info);
-        let folder = path.parent().ok_or("the file has no folder")?;
+        let folder = path
+            .parent()
+            .ok_or("This file has no folder. Open it again from its folder.")?;
         let destination = export::destination(folder, &path, format);
         Ok(ExportOptions {
             format,

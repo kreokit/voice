@@ -53,7 +53,10 @@ fn one() -> u32 {
 
 pub fn probe(path: &Path) -> Result<MediaInfo, String> {
     if !path.is_file() {
-        return Err(format!("{} doesn't exist", path.display()));
+        return Err(format!(
+            "{} doesn't exist any more. If it was moved or renamed, open it again from its new place.",
+            path.display()
+        ));
     }
     let ffprobe = ffmpeg::locate("ffprobe")?;
     let output = Command::new(&ffprobe)
@@ -65,7 +68,7 @@ pub fn probe(path: &Path) -> Result<MediaInfo, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "this file can't be read as audio or video: {}",
+            "This file can't be read as audio or video ({}). Check that it plays in other apps, or convert it to WAV or MP4 first.",
             stderr.trim()
         ));
     }
