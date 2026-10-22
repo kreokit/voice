@@ -128,6 +128,10 @@ export function CleanPanel({
             </p>
           </>
         )}
+      <p className="inspector-hint">
+        Room echo reduction is coming. Until then, Best also takes some room echo away (measured: clearly more
+        than Fast).
+      </p>
     </section>
   );
 }
