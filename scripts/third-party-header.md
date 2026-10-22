@@ -72,6 +72,35 @@ On Windows, ONNX Runtime is linked against `DirectML.dll`. KreoKit Voice does **
 that file: the copy that comes with Windows 10 (version 1903 or later) and Windows 11 is
 used, and the model runs on the CPU only.
 
+## FFmpeg (bundled program)
+
+KreoKit Voice bundles `ffmpeg` and `ffprobe` from **FFmpeg 9.0.2** as separate programs
+(sidecars); the app runs them, it does not link to them.
+
+- Licence: **GNU Lesser General Public License** (LGPL-2.1-or-later for the macOS builds,
+  LGPL-3.0-or-later for the Windows and Linux builds). No GPL or non-free components are
+  enabled. Full text: `licenses/FFMPEG-LICENSE.txt` in the app, and
+  <https://www.gnu.org/licenses/lgpl-3.0.html>.
+- Source code: FFmpeg <https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz>. The exact builds,
+  their sources and SHA-256 checksums are listed in
+  [src-tauri/binaries/README.md](src-tauri/binaries/README.md):
+  - Windows / Linux: BtbN FFmpeg-Builds, LGPL variant, release `autobuild-2026-09-30-13-08`
+    (revision `n9.0.2-17-g2a571b6068`), <https://github.com/BtbN/FFmpeg-Builds>
+  - macOS: built from source by `scripts/build-ffmpeg-macos.sh` in this repository
+- You may replace the bundled FFmpeg with your own build: put it next to the app's
+  executable under the same name, or point `KREOKIT_FFMPEG` / `KREOKIT_FFPROBE` at it.
+
+Libraries built into the bundled FFmpeg that Voice uses:
+
+| Library | Use | Licence | Source |
+|---|---|---|---|
+| LAME 3.100 | MP3 export | LGPL-2.0-or-later | <https://lame.sourceforge.io> |
+| libopus 1.5.2 | Opus sound in WebM videos | BSD-3-Clause | <https://opus-codec.org> |
+
+The Windows and Linux builds contain further LGPL-compatible libraries enabled by BtbN's
+LGPL variant; the complete list is in `ffmpeg -buildconf` and in BtbN's build scripts. On
+macOS, AAC is encoded by Apple's AudioToolbox (part of macOS).
+
 ## Audio output
 
 Playback uses the `cpal` crate (Apache-2.0) and the operating system's audio API:

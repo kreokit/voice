@@ -1,0 +1,82 @@
+/* Batch: the files, their status, and the shared settings. */
+
+.batch-main {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-6);
+}
+
+.batch-summary {
+  color: var(--color-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.batch-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--size-row-min);
+  padding: var(--space-2) var(--space-3);
+}
+
+.batch-row + .batch-row {
+  border-top: 1px solid var(--color-border);
+}
+
+.batch-status {
+  flex: none;
+  max-width: 50%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--text-meta);
+  color: var(--color-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-status.running {
+  color: var(--color-text-2);
+}
+
+.batch-status.done {
+  color: var(--color-text);
+}
+
+.batch-status.done svg {
+  color: var(--color-accent);
+}
+
+.batch-status.failed {
+  color: var(--color-danger);
+}
+
+.batch-progress {
+  flex-basis: 100%;
+}
+
+.batch-results {
+  margin: 0;
+  padding-left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-2);
+}
