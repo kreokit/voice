@@ -8,7 +8,17 @@
 
 Part of [KreoKit](https://github.com/kreokit), free open-source creator tools.
 
-> **Status:** in development. Not ready to download yet.
+> **Status:** alpha. Download it from [Releases](https://github.com/kreokit/voice/releases) (macOS, Windows, Linux).
+
+## What it does
+
+- **Remove background noise** offline: **Fast** (RNNoise, built in) or **Best** (DPDFNet, a one-time 10.5 MB download), with a Strength slider.
+- **Polish:** low rumble, harsh S sounds, an even level, and loudness for **Social video (−14 LUFS)**, **Podcast (−16 LUFS)** or your own target, peaks under −1 dBTP.
+- **Compare** Original and Cleaned at the same moment, loudness-matched (key B).
+- **Export** WAV, FLAC, M4A or MP3, each file checked after writing; videos keep their picture untouched, only the sound is replaced.
+- **Batch:** the same settings for many files, Export all with time left, nothing overwritten without asking.
+
+Unsigned alpha: see the release notes for how to open it the first time.
 
 ## Development
 

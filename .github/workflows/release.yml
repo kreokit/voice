@@ -1,0 +1,235 @@
+# Builds unsigned KreoKit Voice bundles for macOS (Apple Silicon + Intel), Windows and
+# Linux and uploads them to a DRAFT GitHub pre-release. Run it from the Actions tab
+# ("Run workflow", optionally with another tag) or by pushing a v* tag.
+# Adapted from KreoKit Clips (FFmpeg sidecars, checks, self-test) and KreoKit Cutout
+# (ONNX Runtime). Nothing is uploaded unless every check of that build passed.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        required: true
+        default: v0.1.0-alpha
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: Tests and licence checks
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Linux packages for Tauri and ALSA
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev libasound2-dev
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+      - name: Rust dependency licences (cargo-deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: src-tauri/Cargo.toml
+          command: check licenses bans sources
+      - name: THIRD-PARTY-LICENSES.md is up to date
+        run: python scripts/third_party.py --check
+
+  release:
+    name: Draft release
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A pre-release, never "Latest" (decided 2026-10-21: no release shows Latest).
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title "KreoKit Voice ${TAG#v}" \
+              --notes-file "docs/release-notes/$TAG.md"
+          fi
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - name: macOS Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - name: Windows x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - name: Linux x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}-release
+
+      - name: Linux packages for Tauri and ALSA
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev libasound2-dev libfuse2
+
+      # FFmpeg sidecars: LGPL builds only (src-tauri/binaries/README.md). macOS: our own
+      # build (LAME 3.101, libopus), cached by the script's contents.
+      - name: Cache macOS FFmpeg build
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: target-ffmpeg
+          key: ffmpeg-${{ matrix.target }}-${{ hashFiles('scripts/build-ffmpeg-macos.sh') }}
+      - name: Tools to build FFmpeg
+        if: runner.os == 'macOS'
+        run: brew install pkgconf nasm
+      - name: Fetch or build FFmpeg
+        run: python scripts/fetch_ffmpeg.py ${{ matrix.target }} --reuse
+      - name: Verify FFmpeg (LGPL, every encoder and muxer Voice uses, real exports)
+        run: python scripts/verify_ffmpeg.py ${{ matrix.target }}
+
+      # ONNX Runtime 1.22 comes from the ort crate's pinned, checksummed download (pyke's
+      # static libraries); the RNNoise model from Xiph, else our models-v1 mirror, checked
+      # against its SHA-256 by build.rs.
+      - run: pnpm install --frozen-lockfile
+      # Build only; the files are uploaded at the end, once the checks below have passed.
+      - name: Build
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.release.conf.json
+
+      - name: Check the bundle contents
+        run: |
+          out="src-tauri/target/${{ matrix.target }}/release"
+          exe=""; [[ "${{ runner.os }}" == "Windows" ]] && exe=".exe"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            app=$(ls -d "$out"/bundle/macos/*.app)
+            res="$app/Contents/Resources"; bin="$app/Contents/MacOS"
+            codesign --verify --deep --strict "$app" && echo "ad-hoc signature ok"
+          else
+            res="$out"; bin="$out"
+          fi
+          for f in "$res/THIRD-PARTY-LICENSES.md" "$res/licenses/FFMPEG-LICENSE.txt" \
+                   "$res/licenses/RNNOISE-COPYING.txt" "$res/licenses/MODEL-DPDFNET-LICENSE.txt" \
+                   "$res/licenses/ONNXRUNTIME-LICENSE.txt" \
+                   "$res/licenses/ONNXRUNTIME-ThirdPartyNotices.txt" \
+                   "$bin/ffmpeg$exe" "$bin/ffprobe$exe"; do
+            [[ -f "$f" ]] && echo "ok  $f" || { echo "missing $f"; exit 1; }
+          done
+
+      # The runners have a new macOS, where everything runs; this catches what would only
+      # fail on macOS 12 (weak imports from a newer SDK, a too-new minimum macOS). ONNX
+      # Runtime 1.22's static libraries and cpal's CoreAudio bindings matter here.
+      - name: Check the macOS binaries run on macOS 12
+        if: runner.os == 'macOS'
+        run: |
+          python scripts/check_macos_binary.py --min-macos "$MACOSX_DEPLOYMENT_TARGET" \
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+
+      # The Best model for the self-test, cached by its checksum (the self-test downloads
+      # it from models-v1 and verifies it on a cache miss).
+      - name: Cache the self-test model
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/voice-models
+          key: voice-models-dpdfnet2-7f0575a5
+
+      # Runs the shipped binary with the bundled FFmpeg: clean a noisy fixture with Fast and
+      # Best and measure it, export every audio format at -14 LUFS, a video remux (MP4 with
+      # late audio, WebM) and a video as MP3, each checked by export's own checks.
+      # Needs no display.
+      - name: Self-test the release binary
+        run: |
+          out="src-tauri/target/${{ matrix.target }}/release"
+          case "${{ runner.os }}" in
+            macOS) exe=$(ls -d "$out"/bundle/macos/*.app)/Contents/MacOS/voice ;;
+            Windows) exe="$out/voice.exe" ;;
+            *) exe="$out/voice" ;;
+          esac
+          "$exe" --self-test fixtures/speech --models "${{ runner.temp }}/voice-models"
+
+      # Only now, after every check above passed, do files go to the draft release; a failed
+      # check never uploads anything.
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          rm -rf upload && mkdir upload
+          case "${{ runner.os }}" in
+            macOS)
+              app=$(ls -d "$bundle"/macos/*.app)
+              cp "$bundle"/dmg/*.dmg upload/
+              COPYFILE_DISABLE=1 tar -czf "upload/$(basename "$app" .app)_${{ contains(matrix.target, 'x86_64') && 'x64' || 'aarch64' }}.app.tar.gz" \
+                -C "$(dirname "$app")" "$(basename "$app")" ;;
+            Windows) cp "$bundle"/nsis/*-setup.exe upload/ ;;
+            *) cp "$bundle"/appimage/*.AppImage "$bundle"/deb/*.deb upload/ ;;
+          esac
+          for f in upload/*; do mv "$f" "upload/$(basename "$f" | tr ' ' '.')"; done
+          ls -l upload
+          gh release upload "$TAG" upload/* --clobber
