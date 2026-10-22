@@ -1296,7 +1296,9 @@ mod tests {
     #[ignore]
     fn remuxes_mkv_mov_and_webm() {
         let dir = temp_dir("containers");
-        let ff = ffmpeg::locate("ffmpeg").unwrap();
+        // The sample videos come from the system's FFmpeg (on PATH): they need video
+        // encoders, which Voice's own build doesn't have (it never encodes a picture).
+        let ff = PathBuf::from("ffmpeg");
         let make = |name: &str, extra: &[&str]| {
             let path = dir.join(name);
             let status = Command::new(&ff)
