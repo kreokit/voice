@@ -1,6 +1,8 @@
 mod analysis;
 mod clean;
 mod cpu;
+#[cfg(test)]
+mod dereverb;
 mod disk;
 mod dpdfnet;
 mod ffmpeg;
