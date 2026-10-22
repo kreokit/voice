@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-22):** milestones 1–4 are done and tested by the user (M4: "sounds perfect, A/B equally loud"). Milestone 5 (Export + batch + video) is planned, waiting for the user's GO. Room echo reduction is not in v0.1 (measured; see "Polish and loudness"). The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
+**Status (2026-10-22):** milestones 1–4 are done and tested by the user. Milestone 5 (Export + batch + video) GO given 2026-10-22, in progress (decisions in "Export (milestone 5)"). Room echo reduction is not in v0.1. The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -111,6 +111,16 @@ Copy (don't reinvent):
 - **Remove from Recent** (like Clips' Delete project): Home's ⋯ on each file (and right-click) and the editor's ⋯ menu; dialog "Remove from Recent?" with "Your file is not touched. KreoKit's preview, waveform and settings for it are deleted; opening the file again starts fresh." Deletes only our data (list entry with its settings, the preview folder: audio, waveform, cleaned sounds); `release` first stops the player and the jobs when it's the open file. **Clear all recent…** at the bottom of the list ("Clear all recent files?"). Toasts: "Removed from Recent. 29 MB freed." / "Recent files cleared. 8 MB freed." (`remove_recent`, `clear_recent` return bytes freed; `preview::prune` counts them). Checked in the app on copies (test instance with its own identifier, so the user's Recent was untouched).
 - **Quick estimate, then exact:** after a change, `estimate_polish` runs the same measurement on 8 evenly spaced 3 s excerpts of sounds over 60 s (shorter ones whole): **0.3 s** for 10 min of stereo vs 26 s exact (release). The player gets it at once, the readout shows "≈ −14.0 LUFS · peak ≈ −1.2 dBTP · measuring exactly… 63%", then the exact `measure_polish` replaces it. On a 3-min file whose level jumps by 13 dB, the estimate's chain lands at −14.22 / −16.09 LUFS. **Export never uses the estimate**: it runs the exact measurement and checks ±0.5 LU and ≤ −1 dBTP on the written file.
 - **Exact measurement tightened:** corrections follow the measured slope (secant; the limiter takes part of each gain step back), tolerance 0.2 LU, up to 3 corrections: that dynamic file −14.41 → −14.07 LUFS; every preset case within 0.17 LU.
+
+## Export (milestone 5, decided by the user 2026-10-22)
+
+- **Pipeline per file:** decode the original in f32 (preview's channel rule + late-audio padding) → clean with the file's model at its Strength (if it was cleaned) → a **temporary f32 file in the cache** (the exact measurement needs passes; never re-run Best per pass; free-space check first) → exact `loudness::measure` → the same `polish::Chain` → FFmpeg encode into a **temporary file in the destination folder**, renamed when complete → **check the written file**: ±0.5 LU of the target, true peak ≤ −1 dBTP (lossy overshoot → redo once with the ceiling lowered by the overshoot), duration, rate, codec (ffprobe). Never the ≈ estimate.
+- **Export matches what the editor plays** (user): cleaned + Strength + Polish; Polish only if the file was never cleaned.
+- **Nothing to do** (user): no cleaning, Polish stages all off and "Keep the original level" → say so instead of exporting a copy.
+- **Formats:** WAV 24-bit, FLAC 24-bit, M4A/AAC 256 kbps (`aac_at` on macOS, `aac` elsewhere), **MP3 320 kbps via LAME** (user: add **LAME 3.100** to `build-ffmpeg-macos.sh`, from source, pinned checksum; BtbN's LGPL builds already include libmp3lame). **Default format = the file's own kind** (wav/mp3/m4a/flac), anything else WAV (user).
+- **Video:** same container; picture copied (`-c:v copy`), metadata, rotation, subtitles, chapters and other audio tracks kept; the first audio track replaced: AAC 48 kHz in MP4/MOV/M4V/MKV; **WebM → Opus via libopus** (user: added to the macOS build with LAME). Checked: video bit-identical (framemd5), duration within one frame, audio from 0 for the video's length.
+- **Batch:** grid with status; same model, Strength and Polish for all, loudness measured per file; Export all → folder, plan first (conflicts Replace / Keep both / Cancel, size, free space with 2 GB margin); Stop; summary; keep awake (Clips' `awake.rs`). **Time left per file and in total**, from the measured speed of the chosen model (user). Names `<name>-clean.<ext>`, Clips' safe names, never overwrite silently.
+- **Temp files** (user): deleted on cancel/stop; at app start, leftovers of a crashed export are removed from the cache and from destination folders, **only our own temp names**.
 
 ## Core pipeline
 
