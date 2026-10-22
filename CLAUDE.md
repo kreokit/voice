@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-22):** milestones 1–3 are done and tested by the user. Milestone 4 (Polish + loudness) is built and checked; waiting for the user's test. Room echo reduction was measured and is **not** shipped in v0.1 (see "Polish and loudness"). The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
+**Status (2026-10-22):** milestones 1–4 are done and tested by the user (M4: "sounds perfect, A/B equally loud"). Milestone 5 (Export + batch + video) is planned, waiting for the user's GO. Room echo reduction is not in v0.1 (measured; see "Polish and loudness"). The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -106,6 +106,12 @@ Copy (don't reinvent):
 - **For M5 (export):** run the full `loudness::measure` on the f32 clean of the original (not the 16-bit preview) and render with the same `Chain`; verify ±0.5 LU and ≤ −1 dBTP on the exported file with ffprobe/ebur128.
 - **Testing in the app while the user's own dev session runs:** start a second instance with `--config '{"identifier":"com.kreokit.voice.claude-test","build":{"devUrl":"http://localhost:1460","beforeDevCommand":"pnpm dev --port 1460 --strictPort"}}'` and `CARGO_TARGET_DIR` in the scratchpad (separate data, port and build). Its unbundled window can't be raised by PID (System Events / NSRunningApplication fail), and raising by name would pick the user's app: don't click then; screenshots only.
 
+## After the M4 test (user requests, 2026-10-22)
+
+- **Remove from Recent** (like Clips' Delete project): Home's ⋯ on each file (and right-click) and the editor's ⋯ menu; dialog "Remove from Recent?" with "Your file is not touched. KreoKit's preview, waveform and settings for it are deleted; opening the file again starts fresh." Deletes only our data (list entry with its settings, the preview folder: audio, waveform, cleaned sounds); `release` first stops the player and the jobs when it's the open file. **Clear all recent…** at the bottom of the list ("Clear all recent files?"). Toasts: "Removed from Recent. 29 MB freed." / "Recent files cleared. 8 MB freed." (`remove_recent`, `clear_recent` return bytes freed; `preview::prune` counts them). Checked in the app on copies (test instance with its own identifier, so the user's Recent was untouched).
+- **Quick estimate, then exact:** after a change, `estimate_polish` runs the same measurement on 8 evenly spaced 3 s excerpts of sounds over 60 s (shorter ones whole): **0.3 s** for 10 min of stereo vs 26 s exact (release). The player gets it at once, the readout shows "≈ −14.0 LUFS · peak ≈ −1.2 dBTP · measuring exactly… 63%", then the exact `measure_polish` replaces it. On a 3-min file whose level jumps by 13 dB, the estimate's chain lands at −14.22 / −16.09 LUFS. **Export never uses the estimate**: it runs the exact measurement and checks ±0.5 LU and ≤ −1 dBTP on the written file.
+- **Exact measurement tightened:** corrections follow the measured slope (secant; the limiter takes part of each gain step back), tolerance 0.2 LU, up to 3 corrections: that dynamic file −14.41 → −14.07 LUFS; every preset case within 0.17 LU.
+
 ## Core pipeline
 
 1. **Probe + decode** (ffmpeg) to 48 kHz f32, keeping the original channel layout and the video stream info.
@@ -133,7 +139,7 @@ Copy (don't reinvent):
 1. ✅ **Scaffold** (tested by the user 2026-10-22): repo from Clips/Cutout foundations, dev port 1450, Home, probe + decode, waveform + playback.
 2. ✅ **Fast clean** (tested by the user 2026-10-22): licence check, RNNoise (or verified alternative), chunked processing with overlap, Strength, A/B compare, progress + cancel.
 3. ✅ **Best model** (tested by the user 2026-10-22): licence + training-data check, conversion/mirror in `models-v1` (pre-release) if needed, Fast/Best choice, memory check, speed measurement on the dev machine.
-4. 🔶 **Polish + loudness** (built 2026-10-22, waiting for the user's test): analysis (R128), high-pass, de-ess, compression, loudness presets, loudness-matched A/B, echo reduction only if a clean option exists.
+4. ✅ **Polish + loudness** (tested by the user 2026-10-22): analysis (R128), high-pass, de-ess, compression, loudness presets, loudness-matched A/B, echo reduction only if a clean option exists.
 5. **Export + batch + video:** audio formats, video remux with untouched video stream, batch grid, Export all, safe writing, ffprobe checks.
 6. **Release:** reuse the Clips release workflow, `--self-test` (decode a short noisy fixture, clean with each model, check the noise drops by a minimum amount, normalise, export audio + a video remux, verify with ffprobe), draft pre-release v0.1.0-alpha.
 
