@@ -279,6 +279,9 @@ mod speed {
         }
         let _ = a.finish();
         let s = started.elapsed().as_secs_f64();
-        eprintln!("10 min stereo analysed in {s:.1} s ({:.0}× real time)", 600.0 / s);
+        eprintln!(
+            "10 min stereo analysed in {s:.1} s ({:.0}× real time)",
+            600.0 / s
+        );
     }
 }
