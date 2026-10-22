@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-22):** milestones 1–4 are done and tested by the user. Milestone 5 (Export + batch + video) GO given 2026-10-22, in progress (decisions in "Export (milestone 5)"). Room echo reduction is not in v0.1. The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
+**Status (2026-10-22):** milestones 1–4 are done and tested by the user. Milestone 5 (Export + batch + video) is built and checked on copies (2026-10-22), waiting for the user's test (decisions and results in "Export (milestone 5)"). Room echo reduction is not in v0.1. The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -121,6 +121,8 @@ Copy (don't reinvent):
 - **Video:** same container; picture copied (`-c:v copy`), metadata, rotation, subtitles, chapters and other audio tracks kept; the first audio track replaced: AAC 48 kHz in MP4/MOV/M4V/MKV; **WebM → Opus via libopus** (user: added to the macOS build with LAME). Checked: video bit-identical (framemd5), duration within one frame, audio from 0 for the video's length.
 - **Batch:** grid with status; same model, Strength and Polish for all, loudness measured per file; Export all → folder, plan first (conflicts Replace / Keep both / Cancel, size, free space with 2 GB margin); Stop; summary; keep awake (Clips' `awake.rs`). **Time left per file and in total**, from the measured speed of the chosen model (user). Names `<name>-clean.<ext>`, Clips' safe names, never overwrite silently.
 - **Temp files** (user): deleted on cancel/stop; at app start, leftovers of a crashed export are removed from the cache and from destination folders, **only our own temp names**.
+- **Built (2026-10-22):** `export.rs` (pipeline, formats, video remux, checks, temp names `.<name>.<pid>-<n>.kreokit-voice-tmp`, `remove_leftovers`), `export_file` / `export_plan` / `export_batch` / `cancel_export` commands, Export dialog in the editor, Batch screen (two or more files open). `build-ffmpeg-macos.sh` builds FFmpeg 9.0.2 with LAME 3.100 and Opus 1.5.2 from source (pinned SHA-256; `--extra-libs=-liconv`); `verify_ffmpeg.py` passed on the local Intel build (minos 12.0, system libraries only). Newer LAME releases exist (3.101, 4.0); kept 3.100 as decided. Ignored e2e tests (`cargo test export -- --ignored`) pass with the Mac's FFmpeg and with ours (`KREOKIT_FFMPEG`): every audio format, Polish only, nothing to do, late-audio MP4, MKV/MOV/WebM, cancel leaves nothing.
+- **Checked in the app on copies (test instance):** single export (WAV, checked −14.0 LUFS / −1.2 dBTP); batch of 3 (WAV, WAV, MP4) with the conflict dialog (Keep both → `-2`, `-3`), time left per file and in total, summary −14.0 / −14.1 / −14.0 LUFS; MP4 picture bit-identical (framemd5), audio from 0; Stop leaves no temp files; leftovers at start: only `*.kreokit-voice-tmp` removed, other hidden files kept.
 
 ## Core pipeline
 
