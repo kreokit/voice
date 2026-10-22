@@ -352,6 +352,12 @@ impl Chain {
         self.gain = db_to_gain(params.gain_db);
     }
 
+    /// A lower limiter ceiling (dBTP) than [`CEILING_DBTP`]: export uses it when a lossy
+    /// encoder pushed the true peak over −1 dBTP.
+    pub fn set_ceiling_db(&mut self, db: f32) {
+        self.ceiling = db_to_gain(db.min(CEILING_DBTP));
+    }
+
     /// Samples the output lags the input (the limiter's lookahead, when on).
     pub fn latency(&self) -> usize {
         if self.params.limit { LIMITER_DELAY } else { 0 }

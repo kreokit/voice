@@ -1,8 +1,10 @@
 mod analysis;
+mod awake;
 mod clean;
 mod cpu;
 mod disk;
 mod dpdfnet;
+mod export;
 mod ffmpeg;
 mod loudness;
 mod metrics;
@@ -13,6 +15,7 @@ mod preview;
 mod probe;
 mod recent;
 mod rnnoise;
+mod speeds;
 #[cfg(test)]
 mod testsignals;
 
@@ -567,6 +570,387 @@ fn player_state(player: tauri::State<player::Player>) -> player::PlayerState {
     player.state()
 }
 
+/// Where exports keep their temporary f32 file.
+fn export_work_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("export"))
+}
+
+/// The running export's (or batch's) cancel flag.
+#[derive(Default)]
+struct ExportJob(Mutex<Option<Arc<AtomicBool>>>);
+
+impl ExportJob {
+    fn start(&self) -> Result<Arc<AtomicBool>, String> {
+        let mut slot = self.0.lock().unwrap();
+        if slot.as_ref().is_some_and(|c| !c.load(Ordering::SeqCst)) {
+            return Err("an export is already running".into());
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        *slot = Some(cancel.clone());
+        Ok(cancel)
+    }
+
+    fn end(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
+/// What to export a file with: what the editor plays (its model only when it was
+/// cleaned), or a batch's shared settings.
+#[derive(Debug, Clone, Copy, serde::Deserialize, Serialize)]
+struct ExportSettings {
+    /// The model to clean with, `None` for Polish only.
+    cleaned: Option<clean::Model>,
+    strength: f32,
+    polish: loudness::PolishSettings,
+}
+
+/// The file's own settings as the editor plays them.
+fn editor_settings(app: &AppHandle, path: &Path) -> Result<(ExportSettings, PathBuf), String> {
+    let saved = recent::settings(&data_dir(app)?, &path.to_string_lossy());
+    let preview_dir = preview::dir_for(&preview_root(app)?, path);
+    let cleaned = preview::cached(&preview_dir, path)
+        .and_then(|p| clean::cached(&preview_dir, &p, saved.model).map(|_| saved.model));
+    let strength = match saved.model {
+        clean::Model::Fast => saved.fast_strength,
+        clean::Model::Best => saved.best_strength,
+    };
+    Ok((
+        ExportSettings {
+            cleaned,
+            strength,
+            polish: saved.polish,
+        },
+        preview_dir,
+    ))
+}
+
+/// The export dialog's facts for one file.
+#[derive(Serialize)]
+struct ExportOptions {
+    format: export::Format,
+    /// `<name>-clean.<ext>` next to the original.
+    destination: PathBuf,
+    exists: bool,
+    nothing_to_do: bool,
+    cleaned: Option<clean::Model>,
+    mp3: bool,
+    is_video: bool,
+}
+
+#[tauri::command]
+async fn export_options(app: AppHandle, path: PathBuf) -> Result<ExportOptions, String> {
+    let (settings, _) = editor_settings(&app, &path)?;
+    blocking(move || {
+        let info = probe::probe(&path)?;
+        let format = export::Format::default_for(&path, &info);
+        let folder = path.parent().ok_or("the file has no folder")?;
+        let destination = export::destination(folder, &path, format);
+        Ok(ExportOptions {
+            format,
+            exists: destination.exists(),
+            destination,
+            nothing_to_do: export::nothing_to_do(settings.cleaned, &settings.polish),
+            cleaned: settings.cleaned,
+            mp3: export::mp3_available(),
+            is_video: info.video.is_some(),
+        })
+    })
+    .await
+}
+
+#[derive(Clone, Serialize)]
+struct ExportProgress {
+    path: PathBuf,
+    /// The file's place in a batch (0 for a single export).
+    index: usize,
+    stage: export::Stage,
+    fraction: f64,
+}
+
+/// Exports one file with `settings` to `destination`; `export-progress` events.
+fn export_one(
+    app: &AppHandle,
+    path: &Path,
+    settings: ExportSettings,
+    preview_dir: Option<PathBuf>,
+    format: export::Format,
+    destination: PathBuf,
+    replace: bool,
+    index: usize,
+    cancel: &AtomicBool,
+) -> Result<export::Done, String> {
+    let info = probe::probe(path)?;
+    let job = export::Job {
+        source: path.to_path_buf(),
+        info,
+        cleaned: settings.cleaned,
+        strength: settings.strength,
+        polish: settings.polish,
+        format,
+        destination,
+        replace,
+        preview_dir,
+    };
+    let data = data_dir(app)?;
+    if let Some(folder) = job.destination.parent() {
+        speeds::remember_folder(&data, folder);
+    }
+    let events = app.clone();
+    let done = export::export(
+        &job,
+        &export_work_dir(app)?,
+        &models_dir(app)?,
+        cancel,
+        &mut |p| {
+            let _ = events.emit(
+                "export-progress",
+                ExportProgress {
+                    path: job.source.clone(),
+                    index,
+                    stage: p.stage,
+                    fraction: p.fraction,
+                },
+            );
+        },
+    )?;
+    let mut s = speeds::load(&data);
+    s.learn(settings.cleaned, done.realtime_factor);
+    speeds::store(&data, &s);
+    Ok(done)
+}
+
+/// Exports the open file as the editor plays it.
+#[tauri::command]
+async fn export_file(
+    app: AppHandle,
+    path: PathBuf,
+    format: export::Format,
+    destination: PathBuf,
+    replace: bool,
+) -> Result<export::Done, String> {
+    let (settings, preview_dir) = editor_settings(&app, &path)?;
+    let cancel = app.state::<ExportJob>().start()?;
+    let app2 = app.clone();
+    let result = blocking(move || {
+        let _awake = awake::KeepAwake::new("exporting");
+        export_one(
+            &app2,
+            &path,
+            settings,
+            Some(preview_dir),
+            format,
+            destination,
+            replace,
+            0,
+            &cancel,
+        )
+    })
+    .await;
+    app.state::<ExportJob>().end();
+    result
+}
+
+#[tauri::command]
+fn cancel_export(app: AppHandle) {
+    if let Some(job) = app.state::<ExportJob>().0.lock().unwrap().as_ref() {
+        job.store(true, Ordering::SeqCst);
+    }
+}
+
+/// One file of a batch, as planned.
+#[derive(Serialize)]
+struct PlanItem {
+    path: PathBuf,
+    destination: PathBuf,
+    format: export::Format,
+    exists: bool,
+    duration_ms: u64,
+    /// Rough size of the output.
+    bytes: u64,
+    /// Why it can't be exported (no sound, not readable…).
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Plan {
+    items: Vec<PlanItem>,
+    nothing_to_do: bool,
+    total_bytes: u64,
+    free_bytes: Option<u64>,
+    /// Free space to keep (2 GB, as in Clips' Export all).
+    margin_bytes: u64,
+    speeds: speeds::Speeds,
+}
+
+/// Export all, before it starts: names, conflicts, size and free space.
+#[tauri::command]
+async fn export_plan(
+    app: AppHandle,
+    paths: Vec<PathBuf>,
+    folder: PathBuf,
+    format: Option<export::Format>,
+    settings: ExportSettings,
+) -> Result<Plan, String> {
+    let data = data_dir(&app)?;
+    blocking(move || {
+        let mut taken = std::collections::HashSet::new();
+        let items: Vec<PlanItem> = paths
+            .into_iter()
+            .map(|path| match probe::probe(&path) {
+                Ok(info) => {
+                    let f = format
+                        .filter(|f| (*f == export::Format::Video) == info.video.is_some())
+                        .unwrap_or_else(|| export::Format::default_for(&path, &info));
+                    let mut destination = export::destination(&folder, &path, f);
+                    // Two files with the same name in one batch: the second gets -2.
+                    while !taken.insert(destination.clone()) {
+                        destination = export::keep_both(&destination);
+                    }
+                    let channels = preview::output_channels(info.audio.channels);
+                    let bytes = f.bytes_per_second(channels) * info.duration_ms / 1000
+                        + if f == export::Format::Video {
+                            std::fs::metadata(&path).map_or(0, |m| m.len())
+                        } else {
+                            0
+                        };
+                    PlanItem {
+                        exists: destination.exists(),
+                        destination,
+                        format: f,
+                        duration_ms: info.duration_ms,
+                        bytes,
+                        error: None,
+                        path,
+                    }
+                }
+                Err(e) => PlanItem {
+                    destination: PathBuf::new(),
+                    format: export::Format::Wav,
+                    exists: false,
+                    duration_ms: 0,
+                    bytes: 0,
+                    error: Some(e),
+                    path,
+                },
+            })
+            .collect();
+        Ok(Plan {
+            total_bytes: items.iter().map(|i| i.bytes).sum(),
+            nothing_to_do: export::nothing_to_do(settings.cleaned, &settings.polish),
+            items,
+            free_bytes: disk::free_bytes(&folder),
+            margin_bytes: 2 * 1024 * 1024 * 1024,
+            speeds: speeds::load(&data),
+        })
+    })
+    .await
+}
+
+/// One file of Export all, as the user decided it (Replace / Keep both already applied).
+#[derive(serde::Deserialize)]
+struct BatchItem {
+    path: PathBuf,
+    destination: PathBuf,
+    format: export::Format,
+    replace: bool,
+}
+
+#[derive(Serialize)]
+struct BatchResult {
+    path: PathBuf,
+    done: Option<export::Done>,
+    error: Option<String>,
+}
+
+/// Export all with the same settings; `export-progress` events carry each file's index.
+/// Stop (`cancel_export`) ends it after removing the current file's temporary files.
+#[tauri::command]
+async fn export_batch(
+    app: AppHandle,
+    items: Vec<BatchItem>,
+    settings: ExportSettings,
+) -> Result<Vec<BatchResult>, String> {
+    let cancel = app.state::<ExportJob>().start()?;
+    let root = preview_root(&app)?;
+    let app2 = app.clone();
+    let results = blocking(move || {
+        let _awake = awake::KeepAwake::new("exporting");
+        let mut results = Vec::new();
+        for (index, item) in items.into_iter().enumerate() {
+            if cancel.load(Ordering::SeqCst) {
+                results.push(BatchResult {
+                    path: item.path,
+                    done: None,
+                    error: Some(export::CANCELLED.into()),
+                });
+                continue;
+            }
+            let preview_dir = Some(preview::dir_for(&root, &item.path));
+            let result = export_one(
+                &app2,
+                &item.path,
+                settings,
+                preview_dir,
+                item.format,
+                item.destination,
+                item.replace,
+                index,
+                &cancel,
+            );
+            results.push(match result {
+                Ok(done) => BatchResult {
+                    path: item.path,
+                    done: Some(done),
+                    error: None,
+                },
+                Err(e) => BatchResult {
+                    path: item.path,
+                    done: None,
+                    error: Some(e),
+                },
+            });
+        }
+        Ok(results)
+    })
+    .await;
+    app.state::<ExportJob>().end();
+    results
+}
+
+/// Development aid: Export uses this folder instead of asking (`KREOKIT_DEV_EXPORT_DIR`).
+/// Always `None` in release builds.
+#[tauri::command]
+fn dev_export_folder() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var("KREOKIT_DEV_EXPORT_DIR")
+        .ok()
+        .filter(|d| Path::new(d).is_dir())
+}
+
+/// At start: leftovers of a crashed export (only our own temporary names) in the work
+/// folder and in the folders exports went to.
+fn remove_export_leftovers(app: &AppHandle) {
+    let (Ok(work), Ok(data)) = (export_work_dir(app), data_dir(app)) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let mut removed = export::remove_leftovers(&work);
+        for folder in speeds::export_folders(&data) {
+            removed += export::remove_leftovers(&folder);
+        }
+        if removed > 0 {
+            eprintln!("removed {removed} leftover temporary files of an earlier export");
+        }
+    });
+}
+
 /// Development aid: a file to open at startup, from `KREOKIT_DEV_OPEN`. Always `None` in
 /// release builds.
 #[tauri::command]
@@ -611,6 +995,7 @@ pub fn run() {
         .manage(CleanJob::default())
         .manage(ModelJob::default())
         .manage(PolishJob::default())
+        .manage(ExportJob::default())
         .manage(player::Player::default())
         .invoke_handler(tauri::generate_handler![
             probe_media,
@@ -644,9 +1029,19 @@ pub fn run() {
             player_seek,
             player_state,
             dev_startup_file,
+            export_options,
+            export_file,
+            cancel_export,
+            export_plan,
+            export_batch,
+            dev_export_folder,
             quit_app,
             report_problem
         ])
+        .setup(|app| {
+            remove_export_leftovers(app.handle());
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
@@ -656,6 +1051,7 @@ pub fn run() {
                 cancel_clean(app.clone());
                 cancel_model_download(app.clone());
                 cancel_polish(app.clone());
+                cancel_export(app.clone());
                 app.state::<player::Player>().unload();
             }
         });

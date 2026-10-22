@@ -106,6 +106,16 @@ pub fn estimated_bytes(duration_ms: u64, channels: u16) -> u64 {
 
 /// The ffmpeg arguments that decode `source` to the cache's PCM on stdout.
 fn decode_args(source: &Path, channels: u16) -> Vec<String> {
+    decode_args_as(source, channels, false)
+}
+
+/// The decode arguments, as 16-bit (the preview) or 32-bit float (export) samples.
+pub(crate) fn decode_args_as(source: &Path, channels: u16, float: bool) -> Vec<String> {
+    let (format, codec) = if float {
+        ("f32le", "pcm_f32le")
+    } else {
+        ("s16le", "pcm_s16le")
+    };
     let mut args: Vec<String> = ["-nostdin", "-v", "error", "-i"].map(String::from).to_vec();
     args.push(source.to_string_lossy().into_owned());
     args.extend(
@@ -124,9 +134,9 @@ fn decode_args(source: &Path, channels: u16) -> Vec<String> {
             "-af",
             "aresample=async=1:first_pts=0",
             "-f",
-            "s16le",
+            format,
             "-acodec",
-            "pcm_s16le",
+            codec,
             "pipe:1",
         ]
         .map(String::from),

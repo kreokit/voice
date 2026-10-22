@@ -16,6 +16,9 @@ pub struct MediaInfo {
     pub container: String,
     /// The first audio stream, the one Voice cleans.
     pub audio: AudioInfo,
+    /// How many audio streams the file has (export keeps the others as they are).
+    #[serde(default = "one")]
+    pub audio_streams: u32,
     /// How long after the file's 0:00 the audio starts (0 when it starts first). Decoding
     /// pads this with silence, so the cleaned sound stays in sync with the picture.
     pub audio_start_ms: u64,
@@ -42,6 +45,10 @@ pub struct VideoInfo {
     pub fps: f64,
     /// Clockwise rotation applied on display (0, 90, 180 or 270).
     pub rotation: u32,
+}
+
+fn one() -> u32 {
+    1
 }
 
 pub fn probe(path: &Path) -> Result<MediaInfo, String> {
@@ -199,6 +206,11 @@ pub fn parse_ffprobe_json(json: &str) -> Result<MediaInfo, String> {
             channel_layout: audio.channel_layout.clone().filter(|l| !l.is_empty()),
         },
         audio_start_ms,
+        audio_streams: parsed
+            .streams
+            .iter()
+            .filter(|s| s.codec_type.as_deref() == Some("audio"))
+            .count() as u32,
         video,
     })
 }
