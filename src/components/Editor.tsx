@@ -37,9 +37,11 @@ import {
   playerState,
   playerStrength,
 } from "../lib/player";
+import { Measured, PolishSettings, afterReadout, cancelPolish, measurePolish } from "../lib/polish";
 import { OpenFile, useSession } from "../store/session";
 import { Button, IconButton, Kbd, ProgressBar, Segmented, toast } from "../ui";
 import { CleanPanel } from "./CleanPanel";
+import { PolishPanel } from "./PolishPanel";
 import { Timeline } from "./Timeline";
 import { TopBar } from "./TopBar";
 import "../styles/editor.css";
@@ -67,6 +69,10 @@ export function Editor({ file }: { file: OpenFile }) {
   const [settings, setSettings] = useState<FileSettings>(DEFAULT_SETTINGS);
   const [best, setBest] = useState<BestModel | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [measured, setMeasured] = useState<Measured | null>(null);
+  const [measuring, setMeasuring] = useState<number | null>(null);
+  /** The Strength the loudness was measured for (the slider's value once released). */
+  const [measureStrength, setMeasureStrength] = useState<number | null>(null);
   const model = settings.model;
   const strength = strengthOf(settings);
   const [player, setPlayer] = useState<PlayerState | null>(null);
@@ -107,6 +113,7 @@ export function Editor({ file }: { file: OpenFile }) {
       setPeaks(new Uint8Array(wave));
       setAnalysis(prepared.analysis);
       setSettings(saved);
+      setMeasureStrength(strengthOf(saved));
       setBest(bestInfo);
       setCleanedPeaks(cleanedPeaks);
       if (cleaned) setClean({ kind: "done", meta: cleaned });
@@ -119,6 +126,7 @@ export function Editor({ file }: { file: OpenFile }) {
       void invoke("cancel_preview");
       void cancelClean();
       void cancelModelDownload();
+      void cancelPolish();
       void playerClose();
     };
   }, [file.path, info.audio.channels, info.duration_ms, update]);
@@ -181,6 +189,7 @@ export function Editor({ file }: { file: OpenFile }) {
       const cleaned = await cleanStatus(file.path, next);
       setCleanedPeaks(cleaned ? await cleanedWaveform(file.path, next) : null);
       await playerStrength(strengthOf(nextSettings));
+      setMeasureStrength(strengthOf(nextSettings));
       update(await playerLoadCleaned(file.path, next));
       setClean(cleaned ? { kind: "done", meta: cleaned } : { kind: "none" });
     },
@@ -195,8 +204,20 @@ export function Editor({ file }: { file: OpenFile }) {
     [update],
   );
   const commitStrength = useCallback(
-    (s: number) => save(withStrength(settings, model, s)),
+    (s: number) => {
+      save(withStrength(settings, model, s));
+      setMeasureStrength(s);
+    },
     [save, settings, model],
+  );
+
+  const changePolish = useCallback(
+    (polish: PolishSettings) => {
+      const next = { ...settings, polish };
+      setSettings(next);
+      save(next);
+    },
+    [settings, save],
   );
 
   const toggle = useCallback(() => {
@@ -208,6 +229,39 @@ export function Editor({ file }: { file: OpenFile }) {
   const currentMs = player ? estimate(player, receivedAt.current, now) : 0;
   const hasCleaned = player?.has_cleaned ?? false;
   const listening = player?.listen_cleaned ?? false;
+  const hasProcessed = hasCleaned || measured !== null;
+
+  // Measure the loudness through Polish whenever what it depends on settles (400 ms after
+  // the last change); the player gets the result.
+  const busyCleaning = clean.kind === "running" || clean.kind === "downloading";
+  const polish = settings.polish;
+  useEffect(() => {
+    if (stage.kind !== "ready" || busyCleaning || measureStrength === null) return;
+    let live = true;
+    const progress = listen<{ path: string; fraction: number }>("polish-progress", (e) => {
+      if (live && e.payload.path === file.path) setMeasuring(e.payload.fraction);
+    });
+    const timer = window.setTimeout(() => {
+      setMeasuring(0);
+      measurePolish(file.path, hasCleaned ? model : null, measureStrength, polish).then(
+        (m) => {
+          if (!live) return;
+          setMeasured(m);
+          setMeasuring(null);
+        },
+        (e) => {
+          if (!live || String(e) === "cancelled") return;
+          setMeasuring(null);
+          toast(`Couldn't measure the loudness: ${e}`, "error");
+        },
+      );
+    }, 400);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+      void progress.then((un) => un());
+    };
+  }, [stage.kind, busyCleaning, file.path, hasCleaned, model, measureStrength, polish]);
 
   // Space plays or pauses; ← / → move 5 seconds; B switches Original / Cleaned.
   useEffect(() => {
@@ -222,14 +276,14 @@ export function Editor({ file }: { file: OpenFile }) {
         if ((e.target as HTMLElement).closest("[role=slider], [role=radiogroup]")) return;
         e.preventDefault();
         seek(Math.max(0, currentMs + (e.key === "ArrowLeft" ? -5_000 : 5_000)));
-      } else if (e.key.toLowerCase() === "b" && hasCleaned) {
+      } else if (e.key.toLowerCase() === "b" && hasProcessed) {
         e.preventDefault();
         listenTo(!listening);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stage.kind, toggle, seek, currentMs, hasCleaned, listening, listenTo]);
+  }, [stage.kind, toggle, seek, currentMs, hasProcessed, listening, listenTo]);
 
   const durationMs = player?.duration_ms || info.duration_ms;
   return (
@@ -259,6 +313,21 @@ export function Editor({ file }: { file: OpenFile }) {
                   {n}
                 </span>
               ))}
+            </section>
+          )}
+          {(measured || measuring !== null) && (
+            <section className="editor-readout" aria-label="Result" aria-live="polite">
+              <span className="readout-label">After</span>
+              {measuring !== null ? (
+                <span>Measuring the loudness… {Math.round(measuring * 100)}%</span>
+              ) : (
+                measured && (
+                  <>
+                    <span>{afterReadout(measured).lufs}</span>
+                    <span>{afterReadout(measured).peak}</span>
+                  </>
+                )
+              )}
             </section>
           )}
 
@@ -304,7 +373,7 @@ export function Editor({ file }: { file: OpenFile }) {
                 <span className="transport-time">
                   {formatTime(currentMs)} <span className="transport-total">/ {formatTime(durationMs)}</span>
                 </span>
-                {hasCleaned && (
+                {hasProcessed && (
                   <div className="transport-ab">
                     <Segmented
                       label="Listen to"
@@ -312,7 +381,7 @@ export function Editor({ file }: { file: OpenFile }) {
                       onChange={(v) => listenTo(v === "cleaned")}
                       options={[
                         { value: "original", label: "Original" },
-                        { value: "cleaned", label: "Cleaned" },
+                        { value: "cleaned", label: hasCleaned ? "Cleaned" : "Polished" },
                       ]}
                     />
                     <Kbd>B</Kbd>
@@ -327,17 +396,20 @@ export function Editor({ file }: { file: OpenFile }) {
         </main>
 
         {stage.kind === "ready" && (
-          <CleanPanel
-            stage={clean}
-            model={model}
-            best={best}
-            onModel={(m) => void chooseModel(m)}
-            strength={strength}
-            onRemoveNoise={() => void removeNoise()}
-            onCancel={() => void (clean.kind === "downloading" ? cancelModelDownload() : cancelClean())}
-            onStrength={changeStrength}
-            onStrengthCommit={commitStrength}
-          />
+          <aside className="inspector" aria-label="Noise removal and polish">
+            <CleanPanel
+              stage={clean}
+              model={model}
+              best={best}
+              onModel={(m) => void chooseModel(m)}
+              strength={strength}
+              onRemoveNoise={() => void removeNoise()}
+              onCancel={() => void (clean.kind === "downloading" ? cancelModelDownload() : cancelClean())}
+              onStrength={changeStrength}
+              onStrengthCommit={commitStrength}
+            />
+            <PolishPanel settings={settings.polish} onChange={changePolish} />
+          </aside>
         )}
       </div>
     </div>

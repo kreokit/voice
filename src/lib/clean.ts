@@ -1,5 +1,6 @@
 /** Noise removal (src-tauri/src/clean.rs, models.rs) and its settings. */
 import { invoke } from "@tauri-apps/api/core";
+import { DEFAULT_POLISH, PolishSettings } from "./polish";
 
 export type Model = "fast" | "best";
 
@@ -20,12 +21,14 @@ export interface FileSettings {
   model: Model;
   fast_strength: number;
   best_strength: number;
+  polish: PolishSettings;
 }
 
 export const DEFAULT_SETTINGS: FileSettings = {
   model: "fast",
   fast_strength: DEFAULT_STRENGTH.fast,
   best_strength: DEFAULT_STRENGTH.best,
+  polish: DEFAULT_POLISH,
 };
 
 /** The Strength of the file's chosen model. */

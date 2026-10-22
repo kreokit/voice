@@ -28,8 +28,7 @@ export function CleanPanel({
   const busy = stage.kind === "downloading" || stage.kind === "running";
   const bestUnsupported = best !== null && !best.cpu.supported;
   return (
-    <aside className="inspector" aria-label="Noise removal">
-      <section className="inspector-section">
+    <section className="inspector-section" aria-label="Noise removal">
         <SectionLabel>Noise removal</SectionLabel>
         <Field label="Model">
           <Segmented
@@ -129,8 +128,7 @@ export function CleanPanel({
             </p>
           </>
         )}
-      </section>
-    </aside>
+    </section>
   );
 }
 
