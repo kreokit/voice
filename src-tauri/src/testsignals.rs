@@ -1,18 +1,55 @@
-//! Test signals for the quality tests: the speech fixtures and reproducible noises made
-//! here (seeded), so results don't depend on the FFmpeg version or the machine.
+//! Test signals for the quality tests and the release self-test: the speech fixtures and
+//! reproducible noises made here (seeded), so results don't depend on the FFmpeg version or
+//! the machine.
+
+// The app itself uses none of this; the self-test uses the noises, the tests everything.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::f32::consts::PI;
 
 const RATE: f32 = 48_000.0;
 
 /// A fixture's samples: 16-bit 48 kHz mono PCM after the WAV header's "data" tag.
+#[cfg(test)]
 pub fn wav(name: &str) -> Vec<f32> {
-    let bytes = std::fs::read(crate::probe::fixture(name)).unwrap();
-    let data = bytes.windows(4).position(|w| w == b"data").unwrap() + 8;
-    bytes[data..]
+    read_wav(&crate::probe::fixture(name)).unwrap()
+}
+
+/// The samples of one of our 16-bit 48 kHz mono WAV fixtures (no other WAV layouts).
+pub fn read_wav(path: &std::path::Path) -> Result<Vec<f32>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let data = bytes
+        .windows(4)
+        .position(|w| w == b"data")
+        .ok_or_else(|| format!("{} isn't a WAV file", path.display()))?
+        + 8;
+    Ok(bytes[data..]
         .chunks_exact(2)
         .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
-        .collect()
+        .collect())
+}
+
+/// `samples` as a 16-bit 48 kHz mono WAV file.
+pub fn write_wav(path: &std::path::Path, samples: &[f32]) -> Result<(), String> {
+    let data = (samples.len() * 2) as u32;
+    let mut bytes = Vec::with_capacity(44 + data as usize);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+    bytes.extend_from_slice(&48_000u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000u32.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data.to_le_bytes());
+    for s in samples {
+        let v = (s * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Uniform noise in -1..1 (xorshift).
@@ -110,8 +147,19 @@ pub fn noise(kind: Noise, n: usize, seed: u64) -> Vec<f32> {
                 })
                 .collect()
         }
-        Noise::Babble => wav("babble.wav").into_iter().cycle().take(n).collect(),
+        Noise::Babble => babble(n),
     }
+}
+
+#[cfg(test)]
+fn babble(n: usize) -> Vec<f32> {
+    wav("babble.wav").into_iter().cycle().take(n).collect()
+}
+
+/// Babble needs the repository's fixtures, which only the tests have.
+#[cfg(not(test))]
+fn babble(_: usize) -> Vec<f32> {
+    unreachable!("babble is a test-only noise")
 }
 
 fn brown(rng: &mut Rng, n: usize) -> Vec<f32> {

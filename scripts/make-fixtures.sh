@@ -14,6 +14,8 @@
 #                       src-tauri/src/testsignals.rs) and measure what cleaning gives back.
 #   babble.wav          crowd noise for those tests: four other voices (Fred, Karen, Moira,
 #                       Tessa) reading different texts at once, ~11 s, 48 kHz mono 16-bit
+#   hello.webm          hello-late.mp4 as WebM (VP8 picture, Opus sound) for the release
+#                       self-test: Voice's own FFmpeg can't encode a picture to make one
 set -euo pipefail
 
 cd "$(dirname "$0")/../fixtures/speech"
@@ -80,4 +82,10 @@ if wanted babble.wav; then
     -filter_complex "[1:a]adelay=700[b];[2:a]adelay=1500[c];[3:a]adelay=2300[d];[0:a][b][c][d]amix=inputs=4:normalize=0,atrim=duration=11.5,aresample=48000,loudnorm=I=-26:TP=-6:linear=true,aresample=48000" \
     -ac 1 -ar 48000 -c:a pcm_s16le babble.wav
   echo "wrote fixtures/speech/babble.wav"
+fi
+
+if wanted hello.webm; then
+  ffmpeg -nostdin -y -v error -i hello-late.mp4 -map 0:v -map 0:a \
+    -c:v libvpx -b:v 150k -c:a libopus -b:a 48k hello.webm
+  echo "wrote fixtures/speech/hello.webm"
 fi

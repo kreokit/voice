@@ -1,9 +1,6 @@
 //! Quality measurements against a clean reference (the tests' oracle; the release
 //! self-test uses them too): SI-SDR and the noise left in the pauses.
 
-// Only the tests use these until the release self-test (milestone 6).
-#![cfg_attr(not(test), allow(dead_code))]
-
 /// Scale-invariant signal-to-distortion ratio in dB (Le Roux et al. 2019): how much of
 /// `estimate` is the `reference` (at any gain) versus everything else. Both are made
 /// zero-mean first; they must be time-aligned and the same length.
