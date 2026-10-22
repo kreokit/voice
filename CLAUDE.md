@@ -1,7 +1,7 @@
 # KreoKit Voice: build spec for Claude Code
 
 Read this before every task. It is the source of truth for scope and architecture.
-**Status (2026-10-22):** milestones 1–5 are done and tested by the user (M5 2026-10-22: export, video, batch, MP3). Milestone 6: draft pre-release **v0.1.0-alpha** built 2026-10-22 (all four builds passed every check), waiting for the user's test of the Intel build on macOS 12. Room echo reduction is not in v0.1. The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
+**Status (2026-10-22):** milestones 1–5 are done and tested by the user (M5 2026-10-22: export, video, batch, MP3). Milestone 6 is done: **v0.1.0-alpha published 2026-10-22 as a pre-release** (never Latest; tag at 4cd5b86) after the user tested the Intel build on macOS 12 (self-test ok, Best cleaning, MP3 and MP4 export); the `kreokit/.github` profile row links to `/releases`. Room echo reduction is not in v0.1. The question to Xiph was posted as xiph/rnnoise#287 (waiting for an answer).
 App #4 of the KreoKit suite. Apps #1–3 are published: KreoKit Captions (`kreokit/captions`), KreoKit Cutout (`kreokit/cutout`), KreoKit Clips (`kreokit/clips`). Reuse them wherever possible.
 
 ## What we are building
@@ -132,7 +132,7 @@ Copy (don't reinvent):
 - **`--self-test <fixtures/speech> [--models <dir>]`** (`selftest.rs`, before Tauri starts; release builds must use the bundled FFmpeg): `voices.wav` + seeded room noise at 5 dB SNR (`testsignals`, now shared with the app binary) → Fast and Best (downloaded from `models-v1`, skipped on CPUs without x86-64-v2) exported as WAV without Polish and measured: SI-SDR gain ≥ +2.3 dB, pauses −25 dB (Best −35 dB), Best better than Fast; then WAV/FLAC/M4A/MP3 at −14 LUFS, `hello-late.mp4` as video and as MP3, `hello.webm` (new fixture, ours) as video, all through `export::export`'s checks. Dev Mac and the Intel runner: Fast +6.1 dB / −34.4 dB, Best +10.8 dB / −44.9 dB, every export −14.02…−14.04 LUFS, ≤ −1.07 dBTP; 12 s on the runner.
 - **`tauri.release.conf.json`** (sidecars, THIRD-PARTY + FFmpeg licence, ad-hoc signing) and **`release.yml`** from Clips: checks → draft pre-release (`--latest=false`, notes `docs/release-notes/v0.1.0-alpha.md`) → four builds; each uploads only after `verify_ffmpeg.py`, the bundle contents (all licences), `check_macos_binary.py --min-macos 12.0` and the self-test pass. The RNNoise model comes from Xiph, else the models-v1 mirror (build.rs). Windows' first run failed only because `verify_ffmpeg.py` printed "→" to a cp1252 console (fixed: UTF-8 stdout); the draft was re-targeted to 4cd5b86 and all four rebuilt from it.
 - **Sizes:** macOS dmg 49 MB (Intel) / 45 MB (Apple Silicon), Windows setup 105 MB, AppImage 213 MB, deb 148 MB.
-- Next: the user tests the Intel build on macOS 12 → publish as a pre-release (never Latest) → profile README row in `kreokit/.github` (link to `/releases`).
+- **Published 2026-10-22:** the user tested the Intel build on macOS 12 (self-test ok, Best, MP3, MP4) → published as a pre-release, not Latest (`/releases/latest` is 404; `gh release list`: v0.1.0-alpha and models-v1, both Pre-release) → `kreokit/.github` profile row: "🧪 Alpha · download" linking to `/releases`.
 
 ## Core pipeline
 
@@ -163,7 +163,7 @@ Copy (don't reinvent):
 3. ✅ **Best model** (tested by the user 2026-10-22): licence + training-data check, conversion/mirror in `models-v1` (pre-release) if needed, Fast/Best choice, memory check, speed measurement on the dev machine.
 4. ✅ **Polish + loudness** (tested by the user 2026-10-22): analysis (R128), high-pass, de-ess, compression, loudness presets, loudness-matched A/B, echo reduction only if a clean option exists.
 5. ✅ **Export + batch + video** (tested by the user 2026-10-22): audio formats, video remux with untouched video stream, batch grid, Export all, safe writing, ffprobe checks.
-6. **Release** (draft v0.1.0-alpha ready 2026-10-22): reuse the Clips release workflow, `--self-test` (decode a short noisy fixture, clean with each model, check the noise drops by a minimum amount, normalise, export audio + a video remux, verify with ffprobe), draft pre-release v0.1.0-alpha.
+6. ✅ **Release** (v0.1.0-alpha published 2026-10-22 as a pre-release): reuse the Clips release workflow, `--self-test` (decode a short noisy fixture, clean with each model, check the noise drops by a minimum amount, normalise, export audio + a video remux, verify with ffprobe), draft pre-release v0.1.0-alpha.
 
 ## Tests (our oracle)
 
