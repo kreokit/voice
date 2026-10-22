@@ -20,6 +20,7 @@ import {
   Plan,
   STAGE_LABELS,
   cancelExport,
+  conflictText,
   devExportFolder,
   exportBatch,
   exportPlan,
@@ -296,14 +297,7 @@ export function Batch({ files }: { files: OpenFile[] }) {
           }
         >
           <p className="dialog-text">
-            {step.plan.items.filter((i) => i.exists).length} of the files already exist in that folder:{" "}
-            {step.plan.items
-              .filter((i) => i.exists)
-              .slice(0, 3)
-              .map((i) => fileName(i.destination))
-              .join(", ")}
-            {step.plan.items.filter((i) => i.exists).length > 3 ? "…" : ""}. Keep both saves the new ones as
-            “name-2”.
+            {conflictText(step.plan.items.filter((i) => i.exists).map((i) => fileName(i.destination)))}
           </p>
         </Dialog>
       )}

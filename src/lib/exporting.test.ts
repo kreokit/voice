@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-import { formatLeft, speedFor, timeLeft, withExtension } from "./exporting";
+import { conflictText, formatLeft, speedFor, timeLeft, withExtension } from "./exporting";
 
 describe("export", () => {
   it("changes the extension for audio formats only", () => {
@@ -25,5 +25,14 @@ describe("export", () => {
     expect(formatLeft(42)).toBe("about 40 s left");
     expect(formatLeft(420)).toBe("about 7 min left");
     expect(formatLeft(3_600 + 1_260)).toBe("about 1 h 21 min left");
+  });
+
+  it("names the files already there", () => {
+    expect(conflictText(["a-clean.wav"])).toBe(
+      "This file already exists in that folder: a-clean.wav. Keep both saves the new one as “name-2”.",
+    );
+    expect(conflictText(["a", "b", "c", "d"])).toBe(
+      "4 of the files already exist in that folder: a, b, c and 1 more. Keep both saves the new ones as “name-2”.",
+    );
   });
 });

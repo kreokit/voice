@@ -139,3 +139,11 @@ export function formatLeft(seconds: number): string {
   const m = Math.round((seconds % 3600) / 60);
   return `about ${h} h ${m} min left`;
 }
+
+/** The batch conflict message for the names that already exist (at least one). */
+export function conflictText(names: string[]): string {
+  const listed = names.slice(0, 3).join(", ") + (names.length > 3 ? ` and ${names.length - 3} more` : "");
+  const which = names.length === 1 ? "This file already exists" : `${names.length} of the files already exist`;
+  const keep = names.length === 1 ? "the new one" : "the new ones";
+  return `${which} in that folder: ${listed}. Keep both saves ${keep} as “name-2”.`;
+}
