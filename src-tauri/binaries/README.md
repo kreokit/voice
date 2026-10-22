@@ -40,6 +40,7 @@ FFmpeg **9.0.2** on every platform.
   freetype, fribidi, harfbuzz, fontconfig and libopenh264; `--disable-libx264
   --disable-libx265`
 - Build scripts and full dependency list: <https://github.com/BtbN/FFmpeg-Builds>
+- LAME in these builds: SVN trunk r6835 (2026-09-19, after 4.0; the encoder tags MP3s "LAME4.1a"), from BtbN's `scripts.d/50-libmp3lame.sh`; it includes the 3.101 fix for the encoder buffer overflow (#500).
 
 | Target | File | SHA-256 |
 |---|---|---|
@@ -58,7 +59,7 @@ only system libraries.
 | Component | Version | Source | SHA-256 | Licence |
 |---|---|---|---|---|
 | FFmpeg | 9.0.2 | <https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz> | `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e` | LGPL-2.1-or-later |
-| LAME | 3.100 | <https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz> | `ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e` (the same as Homebrew's 3.100 formula) | LGPL-2.0-or-later |
+| LAME | 3.101 | <https://downloads.sourceforge.net/project/lame/lame/3.101/lame-3.101.tar.gz> | `7578af6eebd578b2bd64e468fac4ae1f03670a7e028166e67f855674b9b6aeac` (the file's SHA-1 `ac5a1fc0…` and MD5 `96f668bd…` match SourceForge's file listing) | LGPL-2.0-or-later |
 | Opus | 1.5.2 | <https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz> | `65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1` (Xiph's SHA256SUMS.txt) | BSD-3-Clause |
 
 ## Updating

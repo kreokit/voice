@@ -94,7 +94,7 @@ Libraries built into the bundled FFmpeg that Voice uses:
 
 | Library | Use | Licence | Source |
 |---|---|---|---|
-| LAME 3.100 | MP3 export | LGPL-2.0-or-later | <https://lame.sourceforge.io> |
+| LAME 3.101 (macOS build); Windows/Linux: BtbN's LAME SVN trunk r6835 (4.1 alpha) | MP3 export | LGPL-2.0-or-later | <https://lame.sourceforge.io> |
 | libopus 1.5.2 | Opus sound in WebM videos | BSD-3-Clause | <https://opus-codec.org> |
 
 The Windows and Linux builds contain further LGPL-compatible libraries enabled by BtbN's

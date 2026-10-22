@@ -3,8 +3,8 @@
 #
 #   scripts/build-ffmpeg-macos.sh <x86_64|arm64> <output-dir>
 #
-# From KreoKit Clips' script, for what Voice needs (decided 2026-10-22): static LAME 3.100
-# (MP3, LGPL-2.0) and libopus 1.5.2 (Opus in WebM, BSD-3-Clause) first, then FFmpeg with
+# From KreoKit Clips' script, for what Voice needs (decided 2026-10-22): static LAME 3.101
+# (MP3, LGPL-2.0; 3.101 fixes an encoder buffer overflow, bug #500) and libopus 1.5.2 (Opus in WebM, BSD-3-Clause) first, then FFmpeg with
 # --disable-autodetect, AudioToolbox (Apple's AAC encoder) and the decoders, demuxers and
 # muxers FFmpeg enables by default. No captions stack (Voice never touches the picture:
 # it is copied), no --enable-gpl, no --enable-nonfree. Minimum macOS 12.0.
@@ -21,7 +21,7 @@ MIN_MACOS="12.0"
 # name version url sha256
 SOURCES=(
   "ffmpeg 9.0.2 https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
-  "lame 3.100 https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
+  "lame 3.101 https://downloads.sourceforge.net/project/lame/lame/3.101/lame-3.101.tar.gz 7578af6eebd578b2bd64e468fac4ae1f03670a7e028166e67f855674b9b6aeac"
   "opus 1.5.2 https://downloads.xiph.org/releases/opus/opus-1.5.2.tar.gz 65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1"
 )
 
@@ -54,7 +54,7 @@ done
 JOBS="$(sysctl -n hw.ncpu)"
 
 # LAME: the library only (no command-line frontend, no decoder).
-(cd "$WORK/lame-3.100" &&
+(cd "$WORK/lame-3.101" &&
   ./configure --prefix="$PREFIX" --disable-shared --enable-static --disable-frontend \
     --disable-decoder --disable-dependency-tracking &&
   make -j"$JOBS" && make install)
