@@ -62,6 +62,8 @@ def listed(output: str, name: str, kind: str) -> bool:
 
 
 def main() -> None:
+    # Windows runners print in cp1252, which has no "→".
+    sys.stdout.reconfigure(encoding="utf-8")
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     triple = sys.argv[1]
