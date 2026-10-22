@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Clapperboard, Pause, Play, Trash2, TriangleAlert } from "lucide-react";
+import { Clapperboard, Download, Pause, Play, Trash2, TriangleAlert } from "lucide-react";
 import {
   BestModel,
   CleanMeta,
@@ -42,6 +42,7 @@ import { OpenFile, useSession } from "../store/session";
 import { Button, IconButton, Kbd, ProgressBar, Segmented, toast } from "../ui";
 import { CleanPanel } from "./CleanPanel";
 import { ConfirmDialog, REMOVE_TEXT } from "./ConfirmDialog";
+import { ExportDialog } from "./ExportDialog";
 import { PolishPanel } from "./PolishPanel";
 import { Timeline } from "./Timeline";
 import { TopBar } from "./TopBar";
@@ -74,6 +75,7 @@ export function Editor({ file }: { file: OpenFile }) {
   /** `measured` is the quick estimate, the exact measurement still running. */
   const [estimated, setEstimated] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [measuring, setMeasuring] = useState<number | null>(null);
   /** The Strength the loudness was measured for (the slider's value once released). */
   const [measureStrength, setMeasureStrength] = useState<number | null>(null);
@@ -301,7 +303,23 @@ export function Editor({ file }: { file: OpenFile }) {
         title={<span className="editor-title">{fileName(file.path)}</span>}
         onHome={close}
         fileItems={[{ label: "Remove from Recent…", icon: Trash2, onSelect: () => setRemoving(true) }]}
-      />
+      >
+        {stage.kind === "ready" && (
+          <Button
+            variant={clean.kind === "none" ? "secondary" : "primary"}
+            size="sm"
+            icon={Download}
+            disabled={clean.kind === "running" || clean.kind === "downloading"}
+            onClick={() => {
+              if (player?.playing) void playerPause().then(update);
+              setExporting(true);
+            }}
+          >
+            Export…
+          </Button>
+        )}
+      </TopBar>
+      {exporting && <ExportDialog path={file.path} onClose={() => setExporting(false)} />}
       {removing && (
         <ConfirmDialog
           title="Remove from Recent?"

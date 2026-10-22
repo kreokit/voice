@@ -922,6 +922,26 @@ async fn export_batch(
     results
 }
 
+/// A free name next to a taken one (Keep both): `name-2.ext`, `name-3.ext`…
+#[tauri::command]
+fn free_name(path: PathBuf) -> PathBuf {
+    export::keep_both(&path)
+}
+
+/// Shows an exported file in Finder / Explorer. Only files Voice wrote (a `-clean.`
+/// name) can be revealed; the webview gets no general permission.
+#[tauri::command]
+fn reveal_export(app: AppHandle, path: PathBuf) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    if !name.contains("-clean") || !path.is_file() {
+        return Err("only exported files can be shown".into());
+    }
+    app.opener()
+        .reveal_item_in_dir(&path)
+        .map_err(|e| e.to_string())
+}
+
 /// Development aid: Export uses this folder instead of asking (`KREOKIT_DEV_EXPORT_DIR`).
 /// Always `None` in release builds.
 #[tauri::command]
@@ -1035,6 +1055,8 @@ pub fn run() {
             export_plan,
             export_batch,
             dev_export_folder,
+            reveal_export,
+            free_name,
             quit_app,
             report_problem
         ])
