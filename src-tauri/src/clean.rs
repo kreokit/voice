@@ -470,6 +470,68 @@ fn clean_preview(
     Ok(meta)
 }
 
+/// The sound Polish works on: the preview, blended at the Strength with its cleaned sound
+/// when there is one (`model`), read in one-second blocks.
+pub struct BlendedPreview {
+    pub dir: PathBuf,
+    pub preview: preview::Meta,
+    pub cleaned: Option<Model>,
+    pub strength: f32,
+}
+
+impl crate::loudness::Source for BlendedPreview {
+    fn channels(&self) -> usize {
+        self.preview.channels as usize
+    }
+
+    fn frames(&self) -> u64 {
+        self.preview.frames
+    }
+
+    fn for_each_block(
+        &self,
+        each: &mut dyn FnMut(&[f32]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let open = |path: PathBuf| -> Result<BufReader<File>, String> {
+            File::open(&path)
+                .map(|f| BufReader::with_capacity(1 << 20, f))
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))
+        };
+        let mut original = open(preview::audio_path(&self.dir))?;
+        let mut cleaned = match self.cleaned {
+            Some(model) => Some(open(audio_path(&self.dir, model))?),
+            None => None,
+        };
+        let block = SAMPLE_RATE as usize * self.channels() * 2;
+        let (mut a, mut b) = (vec![0u8; block], vec![0u8; block]);
+        let mut samples = Vec::with_capacity(block / 2);
+        let value = |b: &[u8]| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0;
+        loop {
+            let n = read_full(&mut original, &mut a)?;
+            if n == 0 {
+                return Ok(());
+            }
+            samples.clear();
+            match cleaned.as_mut() {
+                Some(c) => {
+                    let m = read_full(c, &mut b[..n])?;
+                    if m != n {
+                        return Err("the cleaned sound is shorter than the preview".into());
+                    }
+                    samples.extend(
+                        a[..n]
+                            .chunks_exact(2)
+                            .zip(b[..n].chunks_exact(2))
+                            .map(|(o, c)| blend(value(o), value(c), self.strength)),
+                    );
+                }
+                None => samples.extend(a[..n].chunks_exact(2).map(value)),
+            }
+            each(&samples)?;
+        }
+    }
+}
+
 /// Reads until `buf` is full or the file ends; returns the bytes read.
 fn read_full(input: &mut impl Read, buf: &mut [u8]) -> Result<usize, String> {
     let mut filled = 0;
@@ -783,5 +845,48 @@ mod tests {
         // Identical channels: processing one gives the same sound, sample for sample.
         assert_eq!(out_both.len(), out_one.len());
         assert!(out_both == out_one, "the shortcut changed the result");
+    }
+
+    /// The whole path for listening: a stereo file's preview, cleaned with Fast, blended at
+    /// 85% and measured through Polish (Social): the result checked independently.
+    /// Needs ffmpeg: `cargo test polish_on_a_cleaned_file -- --ignored`.
+    #[test]
+    #[ignore]
+    fn polish_on_a_cleaned_file() {
+        use crate::loudness::{PolishSettings, Source, measure};
+        let source = crate::probe::fixture("hello-stereo.m4a");
+        let dir = std::env::temp_dir().join("kreokit-voice-polish-path");
+        let _ = fs::remove_dir_all(&dir);
+        let preview =
+            preview::prepare(&dir, &source, 2, 5_000, &AtomicBool::new(false), |_| {}).unwrap();
+        let none = AtomicBool::new(false);
+        prepare(&dir, &preview, Model::Fast, Path::new(""), &none, |_| {}).unwrap();
+        let blended = BlendedPreview {
+            dir: dir.clone(),
+            preview: preview.clone(),
+            cleaned: Some(Model::Fast),
+            strength: 0.85,
+        };
+        let settings = PolishSettings::default();
+        let m = measure(&blended, &settings, &none, &mut |_| {}).unwrap();
+        // Independently: the blended samples through the chain, metered.
+        let mut samples = Vec::new();
+        blended
+            .for_each_block(&mut |b| {
+                samples.extend_from_slice(b);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(samples.len() as u64, preview.frames * 2);
+        let out = crate::polish::run(&mut crate::polish::Chain::new(2, m.params), &samples);
+        let mut meter =
+            ebur128::EbuR128::new(2, 48_000, ebur128::Mode::I | ebur128::Mode::TRUE_PEAK).unwrap();
+        meter.add_frames_f32(&out).unwrap();
+        let lufs = meter.loudness_global().unwrap();
+        let tp = (0..2)
+            .map(|c| meter.true_peak(c).unwrap())
+            .fold(0.0, f64::max);
+        assert!((lufs + 14.0).abs() <= 0.5, "{lufs}");
+        assert!(20.0 * tp.log10() <= -1.0, "{tp}");
     }
 }

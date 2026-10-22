@@ -37,6 +37,9 @@ pub struct FileSettings {
     pub fast_strength: f32,
     #[serde(default = "best_default")]
     pub best_strength: f32,
+    /// Rumble, de-ess, compression and the loudness target (milestone 4).
+    #[serde(default)]
+    pub polish: crate::loudness::PolishSettings,
 }
 
 fn fast_default() -> f32 {
@@ -53,6 +56,7 @@ impl Default for FileSettings {
             model: Model::Fast,
             fast_strength: fast_default(),
             best_strength: best_default(),
+            polish: Default::default(),
         }
     }
 }
@@ -248,6 +252,10 @@ mod tests {
             model: Model::Best,
             fast_strength: 0.5,
             best_strength: 0.9,
+            polish: crate::loudness::PolishSettings {
+                target: crate::loudness::Target::Podcast,
+                ..Default::default()
+            },
         };
         save_settings(&dir, "/a.wav", chosen).unwrap();
         // Opened again, and moved: kept.

@@ -370,6 +370,73 @@ async fn player_load_cleaned(
     Ok(player.state())
 }
 
+/// The running Polish measurement's cancel flag; a new one cancels the previous.
+#[derive(Default)]
+struct PolishJob(Mutex<Option<Arc<AtomicBool>>>);
+
+/// Measures `path`'s sound (cleaned with `cleaned` when given, at `strength`) through the
+/// Polish chain with `settings`, with `polish-progress` events. When `path` is playing, the
+/// player gets the chain and the original's loudness-matching gain.
+#[tauri::command]
+async fn measure_polish(
+    app: AppHandle,
+    path: PathBuf,
+    cleaned: Option<clean::Model>,
+    strength: f32,
+    settings: loudness::PolishSettings,
+) -> Result<loudness::Measured, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Some(previous) = app
+        .state::<PolishJob>()
+        .0
+        .lock()
+        .unwrap()
+        .replace(cancel.clone())
+    {
+        previous.store(true, Ordering::SeqCst);
+    }
+    let dir = preview::dir_for(&preview_root(&app)?, &path);
+    let events = app.clone();
+    let (job_dir, job_path) = (dir.clone(), path.clone());
+    let (measured, original_lufs) = blocking(move || {
+        let preview = preview::cached(&job_dir, &job_path).ok_or("the preview isn't ready")?;
+        let cleaned = cleaned.filter(|&m| clean::cached(&job_dir, &preview, m).is_some());
+        let original_lufs = preview.analysis.integrated_lufs;
+        let source = clean::BlendedPreview {
+            dir: job_dir,
+            preview,
+            cleaned,
+            strength: strength.clamp(0.0, 1.0),
+        };
+        let measured = loudness::measure(&source, &settings, &cancel, &mut |fraction| {
+            let _ = events.emit(
+                "polish-progress",
+                PreviewProgress {
+                    path: job_path.clone(),
+                    fraction,
+                },
+            );
+        })?;
+        Ok((measured, original_lufs))
+    })
+    .await?;
+    let player = app.state::<player::Player>();
+    if player.loaded().as_ref() == Some(&dir) {
+        player.set_polish(measured.params);
+        if let (Some(out), Some(orig)) = (measured.output_lufs, original_lufs) {
+            player.set_match_gain_db((out - orig) as f32);
+        }
+    }
+    Ok(measured)
+}
+
+#[tauri::command]
+fn cancel_polish(app: AppHandle) {
+    if let Some(job) = app.state::<PolishJob>().0.lock().unwrap().take() {
+        job.store(true, Ordering::SeqCst);
+    }
+}
+
 /// A/B: the cleaned sound (true) or the original.
 #[tauri::command]
 fn player_listen(player: tauri::State<player::Player>, cleaned: bool) -> player::PlayerState {
@@ -481,6 +548,7 @@ pub fn run() {
         .manage(PreviewJob::default())
         .manage(CleanJob::default())
         .manage(ModelJob::default())
+        .manage(PolishJob::default())
         .manage(player::Player::default())
         .invoke_handler(tauri::generate_handler![
             probe_media,
@@ -499,6 +567,8 @@ pub fn run() {
             cancel_clean,
             cleaned_waveform,
             player_load_cleaned,
+            measure_polish,
+            cancel_polish,
             player_listen,
             player_strength,
             file_settings,
@@ -521,6 +591,7 @@ pub fn run() {
                 cancel_preview(app.clone());
                 cancel_clean(app.clone());
                 cancel_model_download(app.clone());
+                cancel_polish(app.clone());
                 app.state::<player::Player>().unload();
             }
         });

@@ -8,9 +8,6 @@
 //!    more than [`TOLERANCE_LU`] (the limiter takes a little loudness off very dynamic
 //!    sound), the gain is corrected and the pass repeated, at most twice more.
 
-// Used by the player and the commands from the next commit on.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ebur128::{EbuR128, Mode};
@@ -233,11 +230,13 @@ pub fn measure(
 }
 
 /// A whole sound in memory.
+#[cfg(test)]
 pub struct Buffer<'a> {
     pub samples: &'a [f32],
     pub channels: usize,
 }
 
+#[cfg(test)]
 impl Source for Buffer<'_> {
     fn channels(&self) -> usize {
         self.channels

@@ -8,9 +8,6 @@
 //! final `gain_db` then sets the target loudness, and the limiter keeps true peaks under
 //! [`CEILING_DBTP`].
 
-// Used by the player and the commands from the next commit on.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
 
@@ -53,6 +50,12 @@ pub struct Params {
     pub gain_db: f32,
     /// The true-peak limiter (on whenever the loudness is targeted).
     pub limit: bool,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self::bypass()
+    }
 }
 
 impl Params {
@@ -524,6 +527,7 @@ impl Chain {
 
 /// Runs `chain` over a whole interleaved buffer: the output lines up with the input and
 /// is as long.
+#[cfg(test)]
 pub fn run(chain: &mut Chain, interleaved: &[f32]) -> Vec<f32> {
     let latency = chain.latency() * chain.channels;
     let mut out = interleaved.to_vec();
