@@ -455,6 +455,43 @@ async fn measure_polish(
     Ok(measured)
 }
 
+/// The quick estimate right after a change (`loudness::estimate`: excerpts of a long
+/// sound): the player gets it at once; `measure_polish` replaces it with the exact one.
+/// Never used for export.
+#[tauri::command]
+async fn estimate_polish(
+    app: AppHandle,
+    path: PathBuf,
+    cleaned: Option<clean::Model>,
+    strength: f32,
+    settings: loudness::PolishSettings,
+) -> Result<loudness::Measured, String> {
+    let dir = preview::dir_for(&preview_root(&app)?, &path);
+    let job_dir = dir.clone();
+    let (measured, original_lufs) = blocking(move || {
+        let preview = preview::cached(&job_dir, &path).ok_or("the preview isn't ready")?;
+        let cleaned = cleaned.filter(|&m| clean::cached(&job_dir, &preview, m).is_some());
+        let original_lufs = preview.analysis.integrated_lufs;
+        let source = clean::BlendedPreview {
+            dir: job_dir,
+            preview,
+            cleaned,
+            strength: strength.clamp(0.0, 1.0),
+        };
+        let measured = loudness::estimate(&source, &settings, &AtomicBool::new(false))?;
+        Ok((measured, original_lufs))
+    })
+    .await?;
+    let player = app.state::<player::Player>();
+    if player.loaded().as_ref() == Some(&dir) {
+        player.set_polish(measured.params);
+        if let (Some(out), Some(orig)) = (measured.output_lufs, original_lufs) {
+            player.set_match_gain_db((out - orig) as f32);
+        }
+    }
+    Ok(measured)
+}
+
 #[tauri::command]
 fn cancel_polish(app: AppHandle) {
     if let Some(job) = app.state::<PolishJob>().0.lock().unwrap().take() {
@@ -593,6 +630,7 @@ pub fn run() {
             cancel_clean,
             cleaned_waveform,
             player_load_cleaned,
+            estimate_polish,
             measure_polish,
             cancel_polish,
             player_listen,

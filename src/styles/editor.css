@@ -279,3 +279,7 @@
 .inspector-section .ui-select {
   width: 100%;
 }
+
+.readout-progress {
+  color: var(--color-text-3);
+}

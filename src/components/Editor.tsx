@@ -37,7 +37,7 @@ import {
   playerState,
   playerStrength,
 } from "../lib/player";
-import { Measured, PolishSettings, afterReadout, cancelPolish, measurePolish } from "../lib/polish";
+import { Measured, PolishSettings, afterReadout, cancelPolish, estimatePolish, measurePolish } from "../lib/polish";
 import { OpenFile, useSession } from "../store/session";
 import { Button, IconButton, Kbd, ProgressBar, Segmented, toast } from "../ui";
 import { CleanPanel } from "./CleanPanel";
@@ -71,6 +71,8 @@ export function Editor({ file }: { file: OpenFile }) {
   const [best, setBest] = useState<BestModel | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [measured, setMeasured] = useState<Measured | null>(null);
+  /** `measured` is the quick estimate, the exact measurement still running. */
+  const [estimated, setEstimated] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [measuring, setMeasuring] = useState<number | null>(null);
   /** The Strength the loudness was measured for (the slider's value once released). */
@@ -243,21 +245,26 @@ export function Editor({ file }: { file: OpenFile }) {
     const progress = listen<{ path: string; fraction: number }>("polish-progress", (e) => {
       if (live && e.payload.path === file.path) setMeasuring(e.payload.fraction);
     });
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
+      const cleaned = hasCleaned ? model : null;
       setMeasuring(0);
-      measurePolish(file.path, hasCleaned ? model : null, measureStrength, polish).then(
-        (m) => {
-          if (!live) return;
-          setMeasured(m);
-          setMeasuring(null);
-        },
-        (e) => {
-          if (!live || String(e) === "cancelled") return;
-          setMeasuring(null);
-          toast(`Couldn't measure the loudness: ${e}`, "error");
-        },
-      );
-    }, 400);
+      try {
+        // The quick estimate first (≈), at once in the player too; then the exact one.
+        const estimate = await estimatePolish(file.path, cleaned, measureStrength, polish);
+        if (!live) return;
+        setMeasured(estimate);
+        setEstimated(true);
+        const exact = await measurePolish(file.path, cleaned, measureStrength, polish);
+        if (!live) return;
+        setMeasured(exact);
+        setEstimated(false);
+        setMeasuring(null);
+      } catch (e) {
+        if (!live || String(e) === "cancelled") return;
+        setMeasuring(null);
+        toast(`Couldn't measure the loudness: ${e}`, "error");
+      }
+    }, 300);
     return () => {
       live = false;
       window.clearTimeout(timer);
@@ -341,15 +348,18 @@ export function Editor({ file }: { file: OpenFile }) {
           {(measured || measuring !== null) && (
             <section className="editor-readout" aria-label="Result" aria-live="polite">
               <span className="readout-label">After</span>
-              {measuring !== null ? (
-                <span>Measuring the loudness… {Math.round(measuring * 100)}%</span>
-              ) : (
-                measured && (
-                  <>
-                    <span>{afterReadout(measured).lufs}</span>
-                    <span>{afterReadout(measured).peak}</span>
-                  </>
-                )
+              {measured && (
+                <>
+                  <span title={estimated ? "A quick estimate; the exact measurement is running" : undefined}>
+                    {afterReadout(measured, estimated).lufs}
+                  </span>
+                  <span>{afterReadout(measured, estimated).peak}</span>
+                </>
+              )}
+              {measuring !== null && (
+                <span className="readout-progress">
+                  {estimated ? "measuring exactly" : "measuring"}… {Math.round(measuring * 100)}%
+                </span>
               )}
             </section>
           )}

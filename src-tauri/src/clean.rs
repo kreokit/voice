@@ -492,6 +492,15 @@ impl crate::loudness::Source for BlendedPreview {
         &self,
         each: &mut dyn FnMut(&[f32]) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.for_each_block_in(&[(0, self.preview.frames)], each)
+    }
+
+    fn for_each_block_in(
+        &self,
+        ranges: &[(u64, u64)],
+        each: &mut dyn FnMut(&[f32]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        use std::io::{Seek, SeekFrom};
         let open = |path: PathBuf| -> Result<BufReader<File>, String> {
             File::open(&path)
                 .map(|f| BufReader::with_capacity(1 << 20, f))
@@ -502,33 +511,49 @@ impl crate::loudness::Source for BlendedPreview {
             Some(model) => Some(open(audio_path(&self.dir, model))?),
             None => None,
         };
-        let block = SAMPLE_RATE as usize * self.channels() * 2;
+        let frame_bytes = self.channels() as u64 * 2;
+        let block = SAMPLE_RATE as usize * frame_bytes as usize;
         let (mut a, mut b) = (vec![0u8; block], vec![0u8; block]);
         let mut samples = Vec::with_capacity(block / 2);
         let value = |b: &[u8]| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0;
-        loop {
-            let n = read_full(&mut original, &mut a)?;
-            if n == 0 {
-                return Ok(());
+        for &(start, end) in ranges {
+            let seek = |r: &mut BufReader<File>| {
+                r.seek(SeekFrom::Start(start * frame_bytes))
+                    .map_err(|e| format!("cannot read the preview: {e}"))
+            };
+            seek(&mut original)?;
+            if let Some(c) = cleaned.as_mut() {
+                seek(c)?;
             }
-            samples.clear();
-            match cleaned.as_mut() {
-                Some(c) => {
-                    let m = read_full(c, &mut b[..n])?;
-                    if m != n {
-                        return Err("the cleaned sound is shorter than the preview".into());
-                    }
-                    samples.extend(
-                        a[..n]
-                            .chunks_exact(2)
-                            .zip(b[..n].chunks_exact(2))
-                            .map(|(o, c)| blend(value(o), value(c), self.strength)),
-                    );
+            let mut left =
+                (end.min(self.preview.frames).saturating_sub(start) * frame_bytes) as usize;
+            while left > 0 {
+                let want = left.min(block);
+                let n = read_full(&mut original, &mut a[..want])?;
+                if n == 0 {
+                    break;
                 }
-                None => samples.extend(a[..n].chunks_exact(2).map(value)),
+                left -= n;
+                samples.clear();
+                match cleaned.as_mut() {
+                    Some(c) => {
+                        let m = read_full(c, &mut b[..n])?;
+                        if m != n {
+                            return Err("the cleaned sound is shorter than the preview".into());
+                        }
+                        samples.extend(
+                            a[..n]
+                                .chunks_exact(2)
+                                .zip(b[..n].chunks_exact(2))
+                                .map(|(o, c)| blend(value(o), value(c), self.strength)),
+                        );
+                    }
+                    None => samples.extend(a[..n].chunks_exact(2).map(value)),
+                }
+                each(&samples)?;
             }
-            each(&samples)?;
         }
+        Ok(())
     }
 }
 

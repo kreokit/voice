@@ -15,6 +15,7 @@ describe("polish", () => {
     expect(afterReadout(m)).toEqual({ lufs: "−14.0 LUFS", peak: "peak −1.2 dBTP" });
     expect(afterReadout({ ...m, output_true_peak_db: -3.42 }).peak).toBe("peak −3.4 dBTP");
     expect(afterReadout({ ...m, output_lufs: null }).lufs).toBe("silent");
+    expect(afterReadout(m, true)).toEqual({ lufs: "≈ −14.0 LUFS", peak: "peak ≈ −1.2 dBTP" });
   });
 
   it("explains each target and compares settings", () => {

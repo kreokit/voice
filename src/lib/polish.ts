@@ -50,18 +50,25 @@ export function targetHint(s: PolishSettings): string {
   }
 }
 
-/** "After: −14.0 LUFS · peak −1.2 dBTP" readout parts (as measured). */
-export function afterReadout(m: Measured): { lufs: string; peak: string } {
+/**
+ * "After: −14.0 LUFS · peak −1.2 dBTP" readout parts (as measured); an estimate is marked
+ * "≈" until the exact measurement replaces it.
+ */
+export function afterReadout(m: Measured, estimate = false): { lufs: string; peak: string } {
   const minus = (s: string) => s.replace(/^-/, "−");
+  const about = estimate ? "≈ " : "";
   return {
-    lufs: m.output_lufs === null ? "silent" : `${minus(m.output_lufs.toFixed(1))} LUFS`,
-    peak: `peak ${minus(m.output_true_peak_db.toFixed(1))} dBTP`,
+    lufs: m.output_lufs === null ? "silent" : `${about}${minus(m.output_lufs.toFixed(1))} LUFS`,
+    peak: `peak ${about}${minus(m.output_true_peak_db.toFixed(1))} dBTP`,
   };
 }
 
 export const measurePolish = (path: string, cleaned: Model | null, strength: number, settings: PolishSettings) =>
   invoke<Measured>("measure_polish", { path, cleaned, strength, settings });
 export const cancelPolish = () => invoke<void>("cancel_polish");
+/** The quick estimate (excerpts of a long sound), shown with "≈" until the exact one. */
+export const estimatePolish = (path: string, cleaned: Model | null, strength: number, settings: PolishSettings) =>
+  invoke<Measured>("estimate_polish", { path, cleaned, strength, settings });
 
 /** Same settings, so no new measurement is needed. */
 export const samePolish = (a: PolishSettings, b: PolishSettings) =>

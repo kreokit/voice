@@ -5,8 +5,9 @@
 //! 1. its loudness → `pre_gain_db`, bringing it to the chain's working level;
 //! 2. the chain without the limiter → `gain_db` to the target;
 //! 3. the full chain, measured (loudness and true peak); while it misses the target by
-//!    more than [`TOLERANCE_LU`] (the limiter takes a little loudness off very dynamic
-//!    sound), the gain is corrected and the pass repeated, at most twice more.
+//!    more than [`TOLERANCE_LU`] (the limiter takes some loudness off dynamic
+//!    sound), the gain is corrected (following the measured slope) and the pass
+//!    repeated, at most three times more.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::polish::{Chain, Params, Stages, WORK_LUFS};
 
 /// How close to the target the result must measure (the presets promise ±0.5 LU).
-pub const TOLERANCE_LU: f64 = 0.3;
+pub const TOLERANCE_LU: f64 = 0.2;
 /// Gains are kept within this many dB (a near-silent file isn't boosted without end).
 const MAX_GAIN_DB: f64 = 30.0;
 
@@ -95,6 +96,80 @@ pub trait Source {
     ) -> Result<(), String>;
     /// Samples per channel in the whole sound (for progress).
     fn frames(&self) -> u64;
+    /// Calls `each` with the blocks of the given frame ranges only (in order).
+    fn for_each_block_in(
+        &self,
+        ranges: &[(u64, u64)],
+        each: &mut dyn FnMut(&[f32]) -> Result<(), String>,
+    ) -> Result<(), String>;
+}
+
+/// The estimate's sample of a long sound: [`EXCERPTS`] evenly spaced excerpts of
+/// [`EXCERPT_SECONDS`]; `None` when the sound is short enough to measure whole quickly.
+pub const EXCERPTS: u64 = 8;
+pub const EXCERPT_SECONDS: u64 = 3;
+pub const ESTIMATE_ABOVE_SECONDS: u64 = 60;
+
+pub fn excerpts(frames: u64) -> Option<Vec<(u64, u64)>> {
+    let rate = 48_000;
+    if frames <= ESTIMATE_ABOVE_SECONDS * rate {
+        return None;
+    }
+    let len = EXCERPT_SECONDS * rate;
+    let gap = (frames - len) / (EXCERPTS - 1);
+    Some((0..EXCERPTS).map(|i| (i * gap, i * gap + len)).collect())
+}
+
+/// A source made of some ranges of another (the estimate's excerpts).
+pub struct Excerpts<'a> {
+    pub inner: &'a dyn Source,
+    pub ranges: Vec<(u64, u64)>,
+}
+
+impl Source for Excerpts<'_> {
+    fn channels(&self) -> usize {
+        self.inner.channels()
+    }
+
+    fn frames(&self) -> u64 {
+        self.ranges.iter().map(|(a, b)| b - a).sum()
+    }
+
+    fn for_each_block(
+        &self,
+        each: &mut dyn FnMut(&[f32]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.inner.for_each_block_in(&self.ranges, each)
+    }
+
+    fn for_each_block_in(
+        &self,
+        _: &[(u64, u64)],
+        _: &mut dyn FnMut(&[f32]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        Err("excerpts of excerpts".into())
+    }
+}
+
+/// The quick estimate shown right after a change (marked "≈"): [`measure`] on the
+/// excerpts of a long sound, or on the whole of a short one. Never used for export.
+pub fn estimate(
+    source: &dyn Source,
+    settings: &PolishSettings,
+    cancel: &AtomicBool,
+) -> Result<Measured, String> {
+    match excerpts(source.frames()) {
+        Some(ranges) => measure(
+            &Excerpts {
+                inner: source,
+                ranges,
+            },
+            settings,
+            cancel,
+            &mut |_| {},
+        ),
+        None => measure(source, settings, cancel, &mut |_| {}),
+    }
 }
 
 struct Meter {
@@ -142,7 +217,7 @@ pub fn measure(
     progress: &mut dyn FnMut(f64),
 ) -> Result<Measured, String> {
     let channels = source.channels();
-    // Passes: input, chain, then 1–3 checks. Progress assumes 3 and finishes at 1.
+    // Passes: input, chain, then 1–4 checks. Progress assumes 3 and finishes at 1.
     let total = source.frames().max(1) as f64 * 3.0;
     let mut done = 0.0f64;
     let mut step = |frames: usize, progress: &mut dyn FnMut(f64)| {
@@ -209,15 +284,24 @@ pub fn measure(
     params.limit = true;
 
     // 3. The full chain, checked and corrected.
+    // The limiter takes part of each gain step back, so after the first correction the
+    // step follows the measured slope (secant): loudness change per dB of gain.
     let mut result = run(params, true, progress)?;
-    for _ in 0..2 {
+    let mut previous: Option<(f64, f64)> = None;
+    for _ in 0..3 {
         let (Some(t), Some(l)) = (target, result.0) else {
             break;
         };
         if (t - l).abs() <= TOLERANCE_LU {
             break;
         }
-        params.gain_db = clamp(params.gain_db as f64 + t - l) as f32;
+        let gain = params.gain_db as f64;
+        let slope = match previous {
+            Some((g0, l0)) if (gain - g0).abs() > 1e-3 => ((l - l0) / (gain - g0)).clamp(0.2, 1.0),
+            _ => 1.0,
+        };
+        previous = Some((gain, l));
+        params.gain_db = clamp(gain + (t - l) / slope) as f32;
         result = run(params, true, progress)?;
     }
     progress(1.0);
@@ -254,6 +338,20 @@ impl Source for Buffer<'_> {
 
     fn frames(&self) -> u64 {
         (self.samples.len() / self.channels) as u64
+    }
+
+    fn for_each_block_in(
+        &self,
+        ranges: &[(u64, u64)],
+        each: &mut dyn FnMut(&[f32]) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for &(a, b) in ranges {
+            let (a, b) = (a as usize * self.channels, b as usize * self.channels);
+            for block in self.samples[a..b.min(self.samples.len())].chunks(48_000 * self.channels) {
+                each(block)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -339,6 +437,55 @@ mod tests {
         }
     }
 
+    /// The estimate on a long sound whose level changes (a quiet and a loud speaker, and
+    /// noise): close to the exact measurement. `cargo test estimate_is_close -- --nocapture`
+    #[test]
+    fn estimate_is_close_to_the_exact_measurement() {
+        let speech = wav("voices.wav");
+        let noisy = mix(&speech, &noise(Noise::Room, speech.len(), 6), 15.0);
+        let cleaned = clean(&noisy, 1);
+        // Three minutes: the speech at -9, 0 and +4 dB in turns.
+        let mut long = Vec::new();
+        for (i, gain_db) in [-9.0f32, 0.0, 4.0].iter().cycle().take(14).enumerate() {
+            let g = 10f32.powf(gain_db / 20.0);
+            long.extend(cleaned.iter().map(|s| s * g));
+            let _ = i;
+        }
+        let source = Buffer {
+            samples: &long,
+            channels: 1,
+        };
+        assert!(excerpts(source.frames()).is_some());
+        for target in [Target::Social, Target::Podcast] {
+            let settings = PolishSettings {
+                target,
+                ..Default::default()
+            };
+            let exact = measure(&source, &settings, &AtomicBool::new(false), &mut |_| {}).unwrap();
+            let est = estimate(&source, &settings, &AtomicBool::new(false)).unwrap();
+            // The estimate's chain applied to the whole sound, measured independently.
+            let (lufs, tp) = check(&long, 1, &est);
+            let (exact_lufs, _) = check(&long, 1, &exact);
+            eprintln!(
+                "  exact params → {exact_lufs:.2} LUFS (reported {:?})",
+                exact.output_lufs
+            );
+            eprintln!(
+                "{target:?}: exact gain {:.2} dB, estimate {:.2} dB → whole sound {lufs:.2} LUFS, {tp:.2} dBTP",
+                exact.params.gain_db, est.params.gain_db
+            );
+            assert!(
+                (lufs - settings.target_lufs().unwrap()).abs() <= 1.0,
+                "{lufs}"
+            );
+            assert!(tp <= -1.0);
+        }
+        assert!(
+            excerpts(48_000 * 30).is_none(),
+            "short sounds are measured whole"
+        );
+    }
+
     #[test]
     fn off_keeps_the_loudness_and_the_stages_can_be_switched_off() {
         let speech = wav("voices.wav");
@@ -418,6 +565,16 @@ mod speed {
         )
         .unwrap();
         let s = started.elapsed().as_secs_f64();
+        let est_started = std::time::Instant::now();
+        let source = Buffer {
+            samples: &samples,
+            channels: 2,
+        };
+        estimate(&source, &PolishSettings::default(), &AtomicBool::new(false)).unwrap();
+        eprintln!(
+            "10 min stereo, estimate: {:.2} s",
+            est_started.elapsed().as_secs_f64()
+        );
         eprintln!(
             "10 min stereo measured in {s:.1} s ({:.0}x real time): {:?} LUFS, {:.2} dBTP",
             600.0 / s,
