@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fileName, formatDuration, formatTime, isMediaPath, relativeTime } from "./files";
-import { describeAudio } from "./media";
+import { describeAudio, formatBytes, removedMessage } from "./media";
 
 describe("files", () => {
   it("accepts audio and video by extension, in any case", () => {
@@ -47,5 +47,16 @@ describe("media", () => {
     expect(describeAudio({ codec: "flac", sample_rate: 96_000, channels: 6, channel_layout: "5.1" })).toBe(
       "6 channels · 96 kHz · FLAC",
     );
+  });
+});
+
+describe("freed space", () => {
+  it("formats bytes and the message", () => {
+    expect(formatBytes(12_345)).toBe("12 KB");
+    expect(formatBytes(691_560_000)).toBe("692 MB");
+    expect(formatBytes(1_234_000_000)).toBe("1.2 GB");
+    expect(formatBytes(0)).toBe("0 KB");
+    expect(removedMessage(691_560_000)).toBe("Removed from Recent. 692 MB freed.");
+    expect(removedMessage(1_234_000_000, true)).toBe("Recent files cleared. 1.2 GB freed.");
   });
 });

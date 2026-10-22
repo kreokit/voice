@@ -199,3 +199,8 @@
   font: var(--text-meta);
   color: var(--color-warning);
 }
+
+.recent-footer {
+  display: flex;
+  justify-content: flex-end;
+}

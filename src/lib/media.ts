@@ -41,7 +41,21 @@ export interface AddedFile {
 
 export const listRecent = () => invoke<RecentEntry[]>("list_recent");
 export const addFiles = (paths: string[]) => invoke<AddedFile[]>("add_files", { paths });
-export const removeRecent = (path: string) => invoke<void>("remove_recent", { path });
+/** Removes a file from Recent with KreoKit's data for it (never the file); bytes freed. */
+export const removeRecent = (path: string) => invoke<number>("remove_recent", { path });
+/** Removes every file from Recent; bytes freed. */
+export const clearRecent = () => invoke<number>("clear_recent");
+
+/** "12 KB", "690 MB", "1.2 GB" */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
+  return `${Math.max(0, Math.round(bytes / 1e3))} KB`;
+}
+
+/** The toast after removing: "Removed from Recent. 690 MB freed." */
+export const removedMessage = (bytes: number, all = false) =>
+  `${all ? "Recent files cleared" : "Removed from Recent"}. ${formatBytes(bytes)} freed.`;
 export const relocateRecent = (old: string, newPath: string) =>
   invoke<MediaInfo>("relocate_recent", { old, new: newPath });
 

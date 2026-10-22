@@ -144,6 +144,11 @@ pub fn remove(dir: &Path, path: &str) -> Result<Vec<RecentFile>, String> {
     Ok(list)
 }
 
+/// Empties the list.
+pub fn clear(dir: &Path) -> Result<(), String> {
+    store(dir, &[])
+}
+
 /// A moved file found again: `old` is replaced by `new` in place, keeping its position.
 pub fn relocate(dir: &Path, old: &str, new: RecentFile) -> Result<Vec<RecentFile>, String> {
     let mut list = load(dir);
@@ -276,6 +281,26 @@ mod tests {
             (m2.model, m2.fast_strength, m2.best_strength),
             (Model::Fast, 0.6, 0.95)
         );
+    }
+
+    #[test]
+    fn clears_the_list_with_its_settings() {
+        let dir = temp_dir("clear");
+        touch(&dir, vec![file("/a.wav", 1), file("/b.wav", 1)]).unwrap();
+        save_settings(
+            &dir,
+            "/a.wav",
+            FileSettings {
+                fast_strength: 0.3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        clear(&dir).unwrap();
+        assert!(load(&dir).is_empty());
+        // Opened again: fresh settings.
+        touch(&dir, vec![file("/a.wav", 2)]).unwrap();
+        assert_eq!(settings(&dir, "/a.wav"), FileSettings::default());
     }
 
     #[test]

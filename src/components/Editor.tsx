@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Clapperboard, Pause, Play, TriangleAlert } from "lucide-react";
+import { Clapperboard, Pause, Play, Trash2, TriangleAlert } from "lucide-react";
 import {
   BestModel,
   CleanMeta,
@@ -23,7 +23,7 @@ import {
 } from "../lib/clean";
 import { Analysis, formatFloor, formatLufs, formatTruePeak, notes } from "../lib/analysis";
 import { fileName, formatDuration, formatTime } from "../lib/files";
-import { describeAudio } from "../lib/media";
+import { describeAudio, removeRecent, removedMessage } from "../lib/media";
 import {
   PlayerState,
   estimate,
@@ -41,6 +41,7 @@ import { Measured, PolishSettings, afterReadout, cancelPolish, measurePolish } f
 import { OpenFile, useSession } from "../store/session";
 import { Button, IconButton, Kbd, ProgressBar, Segmented, toast } from "../ui";
 import { CleanPanel } from "./CleanPanel";
+import { ConfirmDialog, REMOVE_TEXT } from "./ConfirmDialog";
 import { PolishPanel } from "./PolishPanel";
 import { Timeline } from "./Timeline";
 import { TopBar } from "./TopBar";
@@ -70,6 +71,7 @@ export function Editor({ file }: { file: OpenFile }) {
   const [best, setBest] = useState<BestModel | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [measured, setMeasured] = useState<Measured | null>(null);
+  const [removing, setRemoving] = useState(false);
   const [measuring, setMeasuring] = useState<number | null>(null);
   /** The Strength the loudness was measured for (the slider's value once released). */
   const [measureStrength, setMeasureStrength] = useState<number | null>(null);
@@ -288,7 +290,28 @@ export function Editor({ file }: { file: OpenFile }) {
   const durationMs = player?.duration_ms || info.duration_ms;
   return (
     <div className="screen editor">
-      <TopBar title={<span className="editor-title">{fileName(file.path)}</span>} onHome={close} />
+      <TopBar
+        title={<span className="editor-title">{fileName(file.path)}</span>}
+        onHome={close}
+        fileItems={[{ label: "Remove from Recent…", icon: Trash2, onSelect: () => setRemoving(true) }]}
+      />
+      {removing && (
+        <ConfirmDialog
+          title="Remove from Recent?"
+          text={REMOVE_TEXT}
+          confirmLabel="Remove"
+          onClose={() => setRemoving(false)}
+          onConfirm={() =>
+            void removeRecent(file.path).then(
+              (freed) => {
+                toast(removedMessage(freed), "success");
+                close();
+              },
+              (e) => toast(String(e), "error"),
+            )
+          }
+        />
+      )}
       <div className="editor-body">
         <main className="editor-main">
           <section className="editor-facts" aria-label="About this file">

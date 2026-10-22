@@ -51,8 +51,9 @@ fn preview_root(app: &AppHandle) -> Result<PathBuf, String> {
         .join("preview"))
 }
 
-/// Keeps only the preview caches of files still in the recent list.
-fn prune_previews(app: &AppHandle, list: &[recent::RecentFile]) -> Result<(), String> {
+/// Keeps only the preview caches of files still in the recent list; returns the bytes
+/// freed.
+fn prune_previews(app: &AppHandle, list: &[recent::RecentFile]) -> Result<u64, String> {
     let root = preview_root(app)?;
     let keep: Vec<PathBuf> = list
         .iter()
@@ -60,8 +61,19 @@ fn prune_previews(app: &AppHandle, list: &[recent::RecentFile]) -> Result<(), St
         // The file being played, even if it just left the list.
         .chain(app.state::<player::Player>().loaded())
         .collect();
-    preview::prune(&root, &keep);
-    Ok(())
+    Ok(preview::prune(&root, &keep))
+}
+
+/// Stops everything that uses `dir`'s cache (the player and the jobs), so it can be
+/// deleted; `None` stops them whatever file they're on.
+fn release(app: &AppHandle, dir: Option<&Path>) {
+    let player = app.state::<player::Player>();
+    if dir.is_none() || player.loaded().as_deref() == dir {
+        player.unload();
+        cancel_preview(app.clone());
+        cancel_clean(app.clone());
+        cancel_polish(app.clone());
+    }
 }
 
 fn recent_file(path: &Path, info: &probe::MediaInfo) -> recent::RecentFile {
@@ -128,11 +140,24 @@ async fn add_files(app: AppHandle, paths: Vec<PathBuf>) -> Result<Vec<AddedFile>
     Ok(added)
 }
 
-/// Removes a file from the list (and its preview cache). The file itself is not touched.
+/// Removes a file from Recent: its list entry (with its settings) and its preview,
+/// waveform and cleaned sounds. The file itself is never touched. Returns the bytes freed.
 #[tauri::command]
-async fn remove_recent(app: AppHandle, path: String) -> Result<(), String> {
+async fn remove_recent(app: AppHandle, path: String) -> Result<u64, String> {
+    let dir = preview::dir_for(&preview_root(&app)?, Path::new(&path));
+    release(&app, Some(&dir));
     let list = recent::remove(&data_dir(&app)?, &path)?;
-    prune_previews(&app, &list)
+    let app2 = app.clone();
+    blocking(move || prune_previews(&app2, &list)).await
+}
+
+/// Removes every file from Recent (as `remove_recent`). Returns the bytes freed.
+#[tauri::command]
+async fn clear_recent(app: AppHandle) -> Result<u64, String> {
+    release(&app, None);
+    recent::clear(&data_dir(&app)?)?;
+    let app2 = app.clone();
+    blocking(move || prune_previews(&app2, &[])).await
 }
 
 /// A moved file found again at `new`: it takes the old entry's place.
@@ -555,6 +580,7 @@ pub fn run() {
             list_recent,
             add_files,
             remove_recent,
+            clear_recent,
             relocate_recent,
             prepare_preview,
             cancel_preview,

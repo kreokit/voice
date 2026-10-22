@@ -27,14 +27,18 @@ export async function chooseFiles() {
 export function TopBar({
   title,
   onHome,
+  fileItems,
   children,
 }: {
   title: React.ReactNode;
+  /** The open file's actions, first in the menu. */
+  fileItems?: MenuEntry[];
   /** Adds "Back to Home" to the menu. */
   onHome?: () => void;
   children?: React.ReactNode;
 }) {
   const items: MenuEntry[] = [
+    ...(fileItems ? [...fileItems, "separator" as const] : []),
     { label: "Open files…", icon: FolderOpen, shortcut: "⌘O", onSelect: () => void chooseFiles() },
     ...(onHome ? [{ label: "Back to Home", icon: House, onSelect: onHome }] : []),
     "separator",

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { AudioLines, Clapperboard, FolderOpen, FolderSearch, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { AudioLines, Clapperboard, Ellipsis, FolderOpen, FolderSearch, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { fileName, formatDuration, relativeTime } from "../lib/files";
-import { RecentEntry, listRecent, removeRecent } from "../lib/media";
+import { RecentEntry, clearRecent, listRecent, removeRecent, removedMessage } from "../lib/media";
 import { openPaths, relocateAndOpen } from "../store/session";
-import { Button, MenuEntry, useContextMenu } from "../ui";
+import { Button, Menu, MenuEntry, toast, useContextMenu } from "../ui";
+import { CLEAR_TEXT, ConfirmDialog, REMOVE_TEXT } from "./ConfirmDialog";
 import { TopBar, chooseFiles, pickFile } from "./TopBar";
 import "../styles/home.css";
 
@@ -13,6 +14,8 @@ export function Home() {
   const [recent, setRecent] = useState<RecentEntry[] | null>(null);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState<RecentEntry | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   const refresh = useCallback(() => {
     listRecent().then(setRecent, () => setRecent([]));
@@ -90,13 +93,55 @@ export function Home() {
                   entry={entry}
                   onOpen={() => void run(() => openPaths([entry.path]))}
                   onLocate={() => void locate(entry)}
-                  onRemove={() => void removeRecent(entry.path).then(refresh)}
+                  onRemove={() => setRemoving(entry)}
                 />
               ))}
             </ul>
           )}
+          {recent && recent.length > 0 && (
+            <div className="recent-footer">
+              <Button variant="ghost" size="sm" icon={Trash2} onClick={() => setClearing(true)}>
+                Clear all recent…
+              </Button>
+            </div>
+          )}
         </section>
       </main>
+
+      {removing && (
+        <ConfirmDialog
+          title="Remove from Recent?"
+          text={REMOVE_TEXT}
+          confirmLabel="Remove"
+          onClose={() => setRemoving(null)}
+          onConfirm={() =>
+            void run(async () => {
+              try {
+                toast(removedMessage(await removeRecent(removing.path)), "success");
+              } catch (e) {
+                toast(String(e), "error");
+              }
+            })
+          }
+        />
+      )}
+      {clearing && (
+        <ConfirmDialog
+          title="Clear all recent files?"
+          text={CLEAR_TEXT}
+          confirmLabel="Clear all"
+          onClose={() => setClearing(false)}
+          onConfirm={() =>
+            void run(async () => {
+              try {
+                toast(removedMessage(await clearRecent(), true), "success");
+              } catch (e) {
+                toast(String(e), "error");
+              }
+            })
+          }
+        />
+      )}
     </div>
   );
 }
@@ -112,15 +157,14 @@ function RecentRow({
   onLocate: () => void;
   onRemove: () => void;
 }) {
-  const { onContextMenu, menu } = useContextMenu(
-    (): MenuEntry[] => [
-      entry.exists
-        ? { label: "Open", icon: FolderOpen, onSelect: onOpen }
-        : { label: "Locate…", icon: FolderSearch, onSelect: onLocate },
-      { label: "Remove from list", icon: Trash2, onSelect: onRemove },
-    ],
-    "File actions",
-  );
+  const items = (): MenuEntry[] => [
+    entry.exists
+      ? { label: "Open", icon: FolderOpen, onSelect: onOpen }
+      : { label: "Locate…", icon: FolderSearch, onSelect: onLocate },
+    "separator",
+    { label: "Remove from Recent…", icon: Trash2, onSelect: onRemove },
+  ];
+  const { onContextMenu, menu } = useContextMenu(items, "File actions");
   const Icon = entry.is_video ? Clapperboard : AudioLines;
   return (
     <li className={entry.exists ? "recent-row" : "recent-row missing"} onContextMenu={onContextMenu}>
@@ -153,6 +197,7 @@ function RecentRow({
           Locate…
         </Button>
       )}
+      <Menu buttonLabel={`More for ${fileName(entry.path)}`} icon={Ellipsis} variant="ghost" align="end" items={items()} />
       {menu}
     </li>
   );

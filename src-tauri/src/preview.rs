@@ -333,12 +333,27 @@ impl Levels {
     }
 }
 
-/// Removes cache folders under `root` that aren't in `keep` (files that left the
-/// recent list), so the cache never grows past what Home shows.
-pub fn prune(root: &Path, keep: &[PathBuf]) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
+/// The bytes of all files under `path` (0 when missing).
+pub fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return fs::metadata(path).map_or(0, |m| m.len());
     };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_size(&e.path()),
+            _ => e.metadata().map_or(0, |m| m.len()),
+        })
+        .sum()
+}
+
+/// Removes cache folders under `root` that aren't in `keep` (files that left the
+/// recent list), so the cache never grows past what Home shows. Returns the bytes freed.
+pub fn prune(root: &Path, keep: &[PathBuf]) -> u64 {
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    let mut freed = 0;
     for entry in entries.flatten() {
         let path = entry.path();
         // A job's working folder is left alone while it may still be running (an hour),
@@ -349,9 +364,13 @@ pub fn prune(root: &Path, keep: &[PathBuf]) {
                 .and_then(|m| m.modified())
                 .is_ok_and(|t| t.elapsed().is_ok_and(|age| age.as_secs() < 3600));
         if path.is_dir() && !keep.contains(&path) && !working {
-            let _ = fs::remove_dir_all(&path);
+            let size = dir_size(&path);
+            if fs::remove_dir_all(&path).is_ok() {
+                freed += size;
+            }
         }
     }
+    freed
 }
 
 #[cfg(test)]
@@ -430,7 +449,11 @@ mod tests {
         let gone = root.join("bbbb");
         fs::create_dir_all(&keep).unwrap();
         fs::create_dir_all(&gone).unwrap();
-        prune(&root, std::slice::from_ref(&keep));
+        fs::write(gone.join("audio.pcm"), vec![0u8; 1_000]).unwrap();
+        fs::create_dir_all(gone.join("inner")).unwrap();
+        fs::write(gone.join("inner/x"), vec![0u8; 24]).unwrap();
+        assert_eq!(dir_size(&gone), 1_024);
+        assert_eq!(prune(&root, std::slice::from_ref(&keep)), 1_024);
         assert!(keep.is_dir());
         assert!(!gone.exists());
     }
