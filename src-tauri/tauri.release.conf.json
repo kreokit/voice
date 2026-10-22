@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
+    "publisher": "KreoKit contributors",
+    "copyright": "© 2026 KreoKit contributors. MIT OR Apache-2.0.",
+    "category": "Video",
+    "shortDescription": "Free, offline voice cleanup: remove noise, even out the level, export.",
+    "macOS": {
+      "signingIdentity": "-"
+    },
+    "resources": {
+      "resources/licenses/": "licenses/",
+      "../THIRD-PARTY-LICENSES.md": "THIRD-PARTY-LICENSES.md",
+      "binaries/FFMPEG-LICENSE.txt": "licenses/FFMPEG-LICENSE.txt"
+    }
+  }
+}
