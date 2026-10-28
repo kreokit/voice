@@ -184,6 +184,7 @@ Copy (don't reinvent):
 ## Release checklist
 
 - After publishing, update the kreokit/.github profile README row (link to `/releases`).
+- After publishing, update the tag and file names in kreokit/website data/apps.json.
 
 ## Backlog (not v0.1)
 
