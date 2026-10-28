@@ -8,6 +8,8 @@
 
 Part of [KreoKit](https://github.com/kreokit), free open-source creator tools.
 
+🌐 **Website: [kreokit.vercel.app/voice](https://kreokit.vercel.app/voice)**: download for your computer and see how to install it.
+
 > **Status:** alpha. Download it from [Releases](https://github.com/kreokit/voice/releases) (macOS, Windows, Linux).
 
 ## What it does
